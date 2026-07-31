@@ -12,3 +12,6 @@ app/dist/
 *.log
 .idea/
 .vscode/
+
+# Track Tauri app lockfile even if a global gitignore drops Cargo.lock
+!app/src-tauri/Cargo.lock
