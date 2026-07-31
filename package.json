@@ -1,0 +1,29 @@
+{
+  "name": "theesync",
+  "version": "1.0.0",
+  "description": "Safe one-way category-based sync for HiFi Walker H2 / Rockbox",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "theesync": "./bin/theesync.js"
+  },
+  "scripts": {
+    "test": "node --test test/**/*.test.js",
+    "theesync": "node bin/theesync.js",
+    "app:dev": "npm run dev --prefix app",
+    "app:build": "npm run build --prefix app"
+  },
+  "keywords": [
+    "rockbox",
+    "h2",
+    "sync",
+    "music",
+    "hifiwalker"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^13.1.0"
+  }
+}

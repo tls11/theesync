@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>theesync</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="header">
+        <div>
+          <h1>theesync</h1>
+          <p class="subtitle">One-way category sync for HiFi Walker H2 / Rockbox</p>
+        </div>
+        <div class="header-meta">
+          <button type="button" id="btn-reload-categories" class="btn btn-secondary btn-sm" title="Re-read category allowlist from the engine">
+            Reload categories
+          </button>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Sync jobs</h2>
+          <div class="panel-head-actions">
+            <button type="button" id="btn-expand-jobs" class="btn btn-secondary btn-sm" title="Expand all jobs">Expand all</button>
+            <button type="button" id="btn-collapse-jobs" class="btn btn-secondary btn-sm" title="Collapse all jobs">Collapse all</button>
+            <button type="button" id="btn-add-job" class="btn btn-secondary btn-sm" title="Add a new sync job">+ Add job</button>
+          </div>
+        </div>
+        <div id="jobs" class="jobs"></div>
+        <!-- Populated at runtime with /Volumes/* mounts for volume autocomplete -->
+        <datalist id="volume-mounts"></datalist>
+      </section>
+
+      <section class="panel toggles">
+        <label class="check" title="Skip removing files that exist on the card but not in your source library. Adds and updates still run.">
+          <input type="checkbox" id="opt-no-delete" />
+          <span>No delete</span>
+        </label>
+        <label class="check" title="When size matches, compare file contents with a checksum (slower, catches same-size changes).">
+          <input type="checkbox" id="opt-checksum" />
+          <span>Checksum</span>
+        </label>
+        <label class="check" title="Fail if the card volume has no .rockbox folder or update.upt — avoids syncing to the wrong disk.">
+          <input type="checkbox" id="opt-require-rockbox" />
+          <span>Require Rockbox markers</span>
+        </label>
+      </section>
+
+      <section class="actions">
+        <button type="button" id="btn-dry-run" class="btn btn-secondary">
+          Dry run selected
+        </button>
+        <button type="button" id="btn-sync" class="btn btn-primary">Sync selected</button>
+        <button type="button" id="btn-cancel" class="btn btn-danger" disabled>Cancel</button>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-head">
+          <h2>Log</h2>
+          <div class="panel-head-actions">
+            <label class="check log-verbose-toggle" title="Show per-file actions and macOS metadata cleanup">
+              <input type="checkbox" id="opt-verbose" />
+              <span>Verbose</span>
+            </label>
+            <button type="button" id="btn-copy-log" class="btn btn-ghost btn-sm">Copy</button>
+            <button type="button" id="btn-clear-log" class="btn btn-ghost btn-sm">Clear</button>
+          </div>
+        </div>
+        <pre id="log" class="log" aria-live="polite"></pre>
+        <div id="summary" class="summary"></div>
+      </section>
+    </div>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
