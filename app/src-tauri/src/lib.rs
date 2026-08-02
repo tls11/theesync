@@ -1,14 +1,22 @@
 //! theesync Tauri shell — dialogs, path probes, spawn/kill Node CLI.
 //! Sync logic stays in the Node engine (bin/theesync.js).
 
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+
+/// Debounce window after /Volumes FS events before emitting to the UI.
+const VOLUMES_DEBOUNCE_MS: u64 = 400;
+/// Extra emits after a mount burst (path can appear before Rockbox markers are readable).
+const VOLUMES_RETRY_MS: &[u64] = &[700, 1500];
 
 /// Running Node child (at most one batch step at a time for cancel).
 pub struct EngineState {
@@ -44,12 +52,31 @@ pub struct RunResult {
 pub struct VolumeProbe {
     pub path: String,
     pub volume_root: String,
+    /// True when the volume root path exists (e.g. /Volumes/H2 is mounted).
+    pub root_exists: bool,
     pub exists: bool,
     pub is_dir: bool,
     pub has_rockbox: bool,
     pub has_update: bool,
     pub present: bool,
     pub message: String,
+}
+
+/// Emitted when the /Volumes watcher fails to start (UI can fall back to focus-only).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumesWatchStatusEvent {
+    pub ok: bool,
+    pub message: String,
+}
+
+/// Payload for `volumes-changed` (UI re-probes badges + mount autocomplete).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumesChangedEvent {
+    pub mounts: Vec<String>,
+    /// `watch` (debounced FS event) or `retry` (delayed re-check after mount).
+    pub reason: String,
 }
 
 /// Resolve path to bin/theesync.js (repo root relative to src-tauri, or env override).
@@ -216,6 +243,7 @@ fn probe_dest(dest: String) -> VolumeProbe {
     VolumeProbe {
         path: dest,
         volume_root: volume_root.to_string_lossy().into_owned(),
+        root_exists,
         exists,
         is_dir,
         has_rockbox,
@@ -291,14 +319,15 @@ fn resolve_volume_root(path: String) -> Result<String, String> {
 }
 
 /// List mount points under /Volumes (macOS) for a volume dropdown.
-#[tauri::command]
-fn list_volumes() -> Result<Vec<String>, String> {
+fn list_volumes_impl() -> Vec<String> {
     let volumes = PathBuf::from("/Volumes");
     if !volumes.is_dir() {
-        return Ok(vec![]);
+        return vec![];
     }
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(&volumes).map_err(|e| e.to_string())?;
+    let Ok(entries) = std::fs::read_dir(&volumes) else {
+        return vec![];
+    };
     for ent in entries.flatten() {
         let name = ent.file_name();
         let name = name.to_string_lossy();
@@ -312,7 +341,139 @@ fn list_volumes() -> Result<Vec<String>, String> {
         }
     }
     out.sort();
-    Ok(out)
+    out
+}
+
+#[tauri::command]
+fn list_volumes() -> Result<Vec<String>, String> {
+    Ok(list_volumes_impl())
+}
+
+fn emit_volumes_watch_status(app: &AppHandle, ok: bool, message: impl Into<String>) {
+    let payload = VolumesWatchStatusEvent {
+        ok,
+        message: message.into(),
+    };
+    if let Err(e) = app.emit("volumes-watch-status", payload) {
+        eprintln!("theesync: emit volumes-watch-status failed: {e}");
+    }
+}
+
+/// Watch `/Volumes` (FSEvents via notify) and emit `volumes-changed` after debounce.
+/// Lifetime: background thread holds the Watcher until process exit.
+fn start_volumes_watcher(app: AppHandle) {
+    let volumes = PathBuf::from("/Volumes");
+    if !volumes.is_dir() {
+        eprintln!("theesync: /Volumes not present — volume watch disabled");
+        emit_volumes_watch_status(&app, false, "/Volumes not present — volume watch disabled");
+        return;
+    }
+
+    let app_main = app.clone();
+    let spawn_result = std::thread::Builder::new()
+        .name("volumes-watch".into())
+        .spawn(move || {
+            let (tx, rx) = std::sync::mpsc::channel::<Result<notify::Event, notify::Error>>();
+            let mut watcher = match RecommendedWatcher::new(
+                move |res| {
+                    let _ = tx.send(res);
+                },
+                Config::default(),
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("theesync: volume watcher init failed: {e}");
+                    emit_volumes_watch_status(
+                        &app,
+                        false,
+                        format!("volume watcher init failed: {e}"),
+                    );
+                    return;
+                }
+            };
+
+            if let Err(e) = watcher.watch(&volumes, RecursiveMode::NonRecursive) {
+                eprintln!("theesync: watch /Volumes failed: {e}");
+                emit_volumes_watch_status(&app, false, format!("watch /Volumes failed: {e}"));
+                return;
+            }
+
+            eprintln!("theesync: watching /Volumes for mount changes");
+            emit_volumes_watch_status(&app, true, "watching /Volumes for mount changes");
+
+            // Generation: each FS burst schedules debounced emits; a newer burst cancels older retries.
+            let gen = std::sync::Arc::new(AtomicU64::new(0));
+
+            while let Ok(res) = rx.recv() {
+                match res {
+                    Ok(event) => {
+                        // Ignore pure access/open noise; care about create/remove/modify/rename.
+                        if !event_kind_matters(&event.kind) {
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("theesync: volume watch error: {e}");
+                        continue;
+                    }
+                }
+
+                let g = gen.fetch_add(1, Ordering::SeqCst) + 1;
+                schedule_volumes_changed(app.clone(), gen.clone(), g);
+            }
+
+            // Keep watcher alive for the life of this thread (channel only closes if callback drops).
+            drop(watcher);
+        });
+
+    if let Err(e) = spawn_result {
+        eprintln!("theesync: volume watcher thread spawn failed: {e}");
+        emit_volumes_watch_status(
+            &app_main,
+            false,
+            format!("volume watcher thread spawn failed: {e}"),
+        );
+    }
+}
+
+fn event_kind_matters(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Any
+            | EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(_)
+            | EventKind::Other
+    )
+}
+
+fn schedule_volumes_changed(app: AppHandle, gen: std::sync::Arc<AtomicU64>, g: u64) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(VOLUMES_DEBOUNCE_MS)).await;
+        if gen.load(Ordering::SeqCst) != g {
+            return;
+        }
+        emit_volumes_changed(&app, "watch");
+
+        for delay in VOLUMES_RETRY_MS {
+            tokio::time::sleep(Duration::from_millis(*delay)).await;
+            if gen.load(Ordering::SeqCst) != g {
+                return;
+            }
+            emit_volumes_changed(&app, "retry");
+        }
+    });
+}
+
+fn emit_volumes_changed(app: &AppHandle, reason: &str) {
+    let mounts = list_volumes_impl();
+    let payload = VolumesChangedEvent {
+        mounts,
+        reason: reason.to_string(),
+    };
+    if let Err(e) = app.emit("volumes-changed", payload) {
+        eprintln!("theesync: emit volumes-changed failed: {e}");
+    }
 }
 
 /// Native yes/no confirm. Returns true if confirmed.
@@ -582,7 +743,7 @@ pub fn run() {
             if let Ok(info) = get_engine_info() {
                 eprintln!("theesync engine: {info}");
             }
-            let _ = app;
+            start_volumes_watcher(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

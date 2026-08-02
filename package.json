@@ -13,7 +13,8 @@
     "test": "node --test test/**/*.test.js",
     "theesync": "node bin/theesync.js",
     "app:dev": "npm run dev --prefix app",
-    "app:build": "npm run build --prefix app"
+    "app:build": "npm run build --prefix app",
+    "vendor:mutagen": "python3 -m pip install 'mutagen==1.47.0' -t vendor/py -q"
   },
   "keywords": [
     "rockbox",

@@ -75,6 +75,7 @@ function loadState(categories) {
         jobs: defaultJobs(categories),
         noDelete: false,
         checksum: false,
+        thoroughCovers: false,
         requireRockbox: false,
         verbose: false,
       };
@@ -86,6 +87,7 @@ function loadState(categories) {
       jobs,
       noDelete: Boolean(data.noDelete),
       checksum: Boolean(data.checksum),
+      thoroughCovers: Boolean(data.thoroughCovers),
       requireRockbox: Boolean(data.requireRockbox),
       verbose: Boolean(data.verbose),
     };
@@ -94,6 +96,7 @@ function loadState(categories) {
       jobs: defaultJobs(categories),
       noDelete: false,
       checksum: false,
+      thoroughCovers: false,
       requireRockbox: false,
       verbose: false,
     };
@@ -115,6 +118,7 @@ function saveState(state) {
       })),
       noDelete: state.noDelete,
       checksum: state.checksum,
+      thoroughCovers: Boolean(state.thoroughCovers),
       requireRockbox: state.requireRockbox,
       verbose: Boolean(state.verbose),
     }),
@@ -132,6 +136,10 @@ let state = loadState(categories);
 let running = false;
 let cancelRequested = false;
 let unlistenLine = null;
+/** @type {(() => void) | null} */
+let unlistenVolumes = null;
+/** Last mount list fingerprint — skip datalist rewrite when unchanged */
+let lastMountsKey = "";
 /** @type {HTMLElement} */
 let logEl;
 /** @type {HTMLElement} */
@@ -173,6 +181,7 @@ function commonFlags() {
   const flags = ["--json-lines"];
   if (state.noDelete) flags.push("--no-delete");
   if (state.checksum) flags.push("--checksum");
+  if (state.thoroughCovers) flags.push("--thorough-covers");
   if (state.requireRockbox) flags.push("--require-rockbox");
   if (state.verbose) flags.push("-v");
   return flags;
@@ -242,17 +251,17 @@ async function reloadCategories({ quiet = false } = {}) {
 async function probeJob(job) {
   const dest = jobDest(job);
   if (!dest) {
-    return { present: false, message: "No dest", className: "err" };
+    return { present: false, rootExists: false, message: "No dest", className: "err" };
   }
   try {
     const p = await api.invoke("probe_dest", { dest });
-    if (!p.volumeRoot || p.message?.includes("not found")) {
+    if (!p.volumeRoot || p.rootExists === false) {
       return { ...p, className: "err" };
     }
     if (p.present) return { ...p, className: "ok" };
     return { ...p, className: "warn" };
   } catch (e) {
-    return { message: String(e), className: "err" };
+    return { message: String(e), rootExists: false, className: "err" };
   }
 }
 
@@ -429,6 +438,118 @@ async function refreshBadge(job, badge, badgeText) {
   badgeText.textContent = p.message || "—";
 }
 
+/**
+ * Refresh every job badge without rebuilding the job list DOM.
+ * Triggered by /Volumes watch events and window focus.
+ */
+async function refreshAllJobBadges() {
+  if (!jobsEl) return;
+  const cards = [...jobsEl.querySelectorAll(".job")];
+  await Promise.all(
+    cards.map(async (card) => {
+      const id = card.dataset.id;
+      const job = state.jobs.find((j) => j.id === id);
+      if (!job) return;
+      const badge = card.querySelector(".job-badge");
+      const badgeText = card.querySelector(".badge-text");
+      if (!badge || !badgeText) return;
+      await refreshBadge(job, badge, badgeText);
+    }),
+  );
+}
+
+/** Refresh /Volumes/* autocomplete when the mount list changes. */
+async function refreshVolumeMounts(mountsFromEvent) {
+  try {
+    const mounts = Array.isArray(mountsFromEvent)
+      ? mountsFromEvent
+      : await api.invoke("list_volumes");
+    if (!Array.isArray(mounts)) return;
+    const key = mounts.join("\n");
+    if (key === lastMountsKey) return;
+    lastMountsKey = key;
+    const dl = $("volume-mounts");
+    if (dl) {
+      dl.innerHTML = mounts
+        .map((m) => `<option value="${escapeAttr(m)}"></option>`)
+        .join("");
+    }
+  } catch {
+    /* optional */
+  }
+}
+
+async function onVolumesChanged(payload) {
+  // Still update badges while a sync runs (card may vanish mid-batch).
+  const mounts = payload?.mounts;
+  await refreshVolumeMounts(mounts);
+  await refreshAllJobBadges();
+}
+
+/**
+ * Wire FS-driven volume updates + focus backstop.
+ * Rust watches /Volumes and emits `volumes-changed` (debounced + retries).
+ */
+async function startVolumeAwareness() {
+  try {
+    unlistenVolumes = await api.listen("volumes-changed", (event) => {
+      onVolumesChanged(event?.payload).catch(() => {});
+    });
+  } catch (e) {
+    appendLog(`Volume watch unavailable: ${e}`, "warn");
+  }
+
+  try {
+    await api.listen("volumes-watch-status", (event) => {
+      const p = event?.payload;
+      if (!p) return;
+      if (p.ok) {
+        // Quiet success — only log failures so startup stays calm
+        return;
+      }
+      appendLog(`Volume watch: ${p.message || "unavailable"} (focus re-probe still works)`, "warn");
+    });
+  } catch {
+    /* optional */
+  }
+
+  const onFocus = () => {
+    onVolumesChanged(null).catch(() => {});
+  };
+  window.addEventListener("focus", onFocus);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") onFocus();
+  });
+}
+
+/** True if probe says the volume root is missing / unmounted. */
+function isVolumeMissing(probe) {
+  if (!probe) return true;
+  if (probe.rootExists === false) return true;
+  if (probe.rootExists === true) return false;
+  // Fallback if older probe payload lacks rootExists
+  const msg = String(probe.message || "");
+  return msg.includes("Volume not found");
+}
+
+/**
+ * Fresh probe before Dry run / Sync. Returns false if any selected job's volume is gone.
+ */
+async function ensureVolumesForJobs(jobs) {
+  await refreshAllJobBadges();
+  for (const job of jobs) {
+    const p = await probeJob(job);
+    if (isVolumeMissing(p)) {
+      appendLog(
+        `${job.label}: ${p.message || "volume not found"} — plug in the card or fix Volume path`,
+        "err",
+      );
+      return false;
+    }
+  }
+  return true;
+}
+
 function escapeAttr(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -569,6 +690,7 @@ async function dryRunSelected() {
       return;
     }
   }
+  if (!(await ensureVolumesForJobs(jobs))) return;
 
   setBusy(true);
   summaryEl.innerHTML = "";
@@ -635,6 +757,7 @@ async function syncSelected() {
       return;
     }
   }
+  if (!(await ensureVolumesForJobs(jobs))) return;
 
   setBusy(true);
   summaryEl.innerHTML = "";
@@ -757,6 +880,7 @@ async function init() {
 
   $("opt-no-delete").checked = state.noDelete;
   $("opt-checksum").checked = state.checksum;
+  $("opt-thorough-covers").checked = state.thoroughCovers;
   $("opt-require-rockbox").checked = state.requireRockbox;
   $("opt-verbose").checked = state.verbose;
 
@@ -766,6 +890,10 @@ async function init() {
   });
   $("opt-checksum").addEventListener("change", (e) => {
     state.checksum = e.target.checked;
+    saveState(state);
+  });
+  $("opt-thorough-covers").addEventListener("change", (e) => {
+    state.thoroughCovers = e.target.checked;
     saveState(state);
   });
   $("opt-require-rockbox").addEventListener("change", (e) => {
@@ -876,18 +1004,9 @@ async function init() {
 
   await reloadCategories({ quiet: true });
 
-  // Volume autocomplete: mounted /Volumes/* (macOS)
-  try {
-    const mounts = await api.invoke("list_volumes");
-    const dl = $("volume-mounts");
-    if (dl && Array.isArray(mounts)) {
-      dl.innerHTML = mounts
-        .map((m) => `<option value="${escapeAttr(m)}"></option>`)
-        .join("");
-    }
-  } catch {
-    /* optional */
-  }
+  // Volume autocomplete + live mount awareness (/Volumes FS watch in Rust)
+  await refreshVolumeMounts();
+  await startVolumeAwareness();
 
   // Re-normalize persisted jobs now that we have real categories
   state.jobs = state.jobs.map((j) => normalizeJob(j, categories));

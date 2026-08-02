@@ -33,6 +33,11 @@ function addCommonOptions(cmd) {
     .option('--no-delete', 'skip deletion phase')
     .option('--checksum', 'compare checksums when size matches', false)
     .option('--mtime-tolerance <ms>', 'mtime tolerance in ms (FAT32-friendly)', String(DEFAULT_MTIME_TOLERANCE_MS))
+    .option(
+      '--thorough-covers',
+      'Books: re-inspect embedded art on unchanged audiobooks (slower repair mode)',
+      false,
+    )
     .option('--require-rockbox', 'fail if volume has no .rockbox / update.upt', false)
     .option('--json-lines', 'emit NDJSON events on stdout', false)
     .option('-v, --verbose', 'verbose action logging', false);
@@ -63,6 +68,7 @@ export function resolveNoDelete(opts) {
 export function hasPartialJobFlags(opts) {
   if (opts.dryRun) return true;
   if (opts.checksum) return true;
+  if (opts.thoroughCovers) return true;
   if (opts.requireRockbox) return true;
   if (opts.jsonLines) return true;
   if (opts.verbose) return true;
@@ -94,6 +100,7 @@ function buildJobOptions(opts, extra = {}) {
     noDelete: resolveNoDelete(opts),
     checksum: Boolean(opts.checksum),
     mtimeToleranceMs: parseMtime(opts),
+    thoroughCovers: Boolean(opts.thoroughCovers),
     requireRockbox: Boolean(opts.requireRockbox),
     writePlan: opts.writePlan,
     jsonLines: Boolean(opts.jsonLines),

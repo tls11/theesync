@@ -120,6 +120,43 @@ describe('buildActions', () => {
     assert.equal(skippedUnchanged, 1);
     await rmrf(root);
   });
+
+  it('maps m4b source path to m4a dest path', async () => {
+    const root = await makeTempRoot();
+    const srcFiles = new Map([
+      ['a/book.m4b', entry(root, 'a/book.m4b', 100, 1000)],
+    ]);
+    const { actions } = await buildActions(srcFiles, new Map(), new Map(), new Map(), {
+      mapDestPath: (rel) => (rel.endsWith('.m4b') ? rel.replace(/\.m4b$/, '.m4a') : rel),
+    });
+    const add = actions.find((a) => a.type === 'add' && a.kind === 'file');
+    assert.equal(add.path, 'a/book.m4a');
+    assert.equal(add.sourcePath, 'a/book.m4b');
+    await rmrf(root);
+  });
+
+  it('mtime-only compare ignores size for transforms', async () => {
+    const root = await makeTempRoot();
+    const srcFiles = new Map([
+      ['cover.jpg', entry(root, 'cover.jpg', 50000, 10000)],
+    ]);
+    const destFiles = new Map([
+      ['cover.jpg', entry(root, 'cover.jpg', 12000, 10000)], // smaller after convert
+    ]);
+    const { actions, skippedUnchanged } = await buildActions(
+      srcFiles,
+      destFiles,
+      new Map(),
+      new Map(),
+      {
+        usesMtimeOnlyCompare: (rel) => rel.endsWith('.jpg'),
+        contentTransformFor: (rel) => (rel.endsWith('.jpg') ? 'jpeg-h2' : null),
+      },
+    );
+    assert.equal(actions.length, 0);
+    assert.equal(skippedUnchanged, 1);
+    await rmrf(root);
+  });
 });
 
 describe('hashFile', () => {

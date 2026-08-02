@@ -12,6 +12,11 @@ app/dist/
 *.log
 .idea/
 .vscode/
+# Optional: python mutagen for Books audiobook cover re-embed (npm run vendor:mutagen)
+vendor/py/
+
+# Local session notes (do not commit)
+NEXT-SESSION.md
 
 # Track Tauri app lockfile even if a global gitignore drops Cargo.lock
 !app/src-tauri/Cargo.lock

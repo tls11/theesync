@@ -23,6 +23,8 @@ The volume root is **not** a flat artist list. Managed content lives under allow
   Books/             # managed category
     Author/
       title.epub
+      book.m4a       # source may be .m4b; written as .m4a
+      cover.jpg      # baseline JPEG ≤500px (converted on write)
   Screenshots/       # unknown root → ignored (not deleted)
 ```
 
@@ -34,6 +36,27 @@ source library tree  →  one category directory (e.g. /Volumes/H2/Music)
 
 - **CLI:** one job per invocation  
 - **UI:** job list; run selected jobs in sequence  
+
+### Books job: dest-only transforms
+
+Source files are **never modified**. When writing into `Books/`:
+
+| Source | On H2 |
+|--------|--------|
+| `*.m4b` | Written as `*.m4a`; embedded cover re-encoded to H2-friendly JPEG |
+| `*.m4a` | Embedded cover re-encoded when progressive/oversized |
+| `*.jpg` / `*.jpeg` | **Baseline** JPEG, longest edge ≤ **500px** |
+| Path / title text | Unicode folded to ASCII (e.g. `’` → `'`) so Rockbox/FAT32 render cleanly |
+
+Covers are rewritten when an audiobook is **added/updated**, or when its **sidecar image** changes (same-name `.jpg` / `cover.jpg` / `folder.jpg`). Unchanged audiobooks are not re-inspected by default.
+
+**Thorough covers** (`--thorough-covers` / UI checkbox): optional repair mode that re-checks embedded art on mtime-stable audiobooks (slower).
+
+Rockbox cannot decode progressive JPEGs. Direct `sips` jpeg→jpeg can leave progressive encoding, so theesync goes through a PNG intermediate to force baseline. Audiobook tags are updated with **mutagen** (Python):
+
+```bash
+npm run vendor:mutagen   # once: pip install mutagen into vendor/py
+```
 
 ### Migrating from root-level artists (legacy layout)
 

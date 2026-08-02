@@ -239,12 +239,204 @@ describe('Books category', () => {
     const src = await makeTempRoot();
     await writeTree(src, {
       'Author/title.epub': 'ebook',
-      'Author/cover.jpg': 'c',
+      'Author/notes.txt': 'n',
     });
 
     await syncJob({ source: src, dest, emit: quietEmit() });
     assert.equal(await exists(path.join(dest, 'Author/title.epub')), true);
+    assert.equal(await exists(path.join(dest, 'Author/notes.txt')), true);
     assert.equal(await exists(path.join(vol, '.rockbox')), true);
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('writes m4b sources as m4a on dest without renaming source', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    await writeTree(src, {
+      'Author/Series/book.m4b': 'audiobook-bytes',
+      'Author/Series/notes.txt': 'notes',
+    });
+
+    const { plan } = await planJob({ source: src, dest, emit: quietEmit() });
+    const m4aAdd = plan.actions.find(
+      (a) => a.type === 'add' && a.kind === 'file' && a.path.endsWith('.m4a'),
+    );
+    assert.ok(m4aAdd, 'plan should add .m4a dest path');
+    assert.equal(m4aAdd.path, 'Author/Series/book.m4a');
+    assert.equal(m4aAdd.sourcePath, 'Author/Series/book.m4b');
+    assert.ok(!plan.actions.some((a) => a.path.endsWith('.m4b')));
+
+    await applyPlan(plan, { emit: quietEmit() });
+
+    assert.equal(await exists(path.join(dest, 'Author/Series/book.m4a')), true);
+    assert.equal(await exists(path.join(dest, 'Author/Series/book.m4b')), false);
+    assert.equal(
+      await fs.promises.readFile(path.join(dest, 'Author/Series/book.m4a'), 'utf8'),
+      'audiobook-bytes',
+    );
+    // Source untouched
+    assert.equal(await exists(path.join(src, 'Author/Series/book.m4b')), true);
+    assert.equal(await exists(path.join(src, 'Author/Series/book.m4a')), false);
+
+    // Second plan: unchanged
+    const { plan: plan2 } = await planJob({ source: src, dest, emit: quietEmit() });
+    assert.equal(
+      plan2.actions.filter((a) => a.type === 'add' || a.type === 'update').length,
+      0,
+    );
+
+    // Legacy dest .m4b (wrong extension) is cleaned when source is .m4b
+    await fs.promises.writeFile(path.join(dest, 'Author/Series/book.m4b'), 'stale');
+    const { plan: plan3 } = await planJob({ source: src, dest, emit: quietEmit() });
+    assert.ok(
+      plan3.actions.some(
+        (a) => a.type === 'delete' && a.path === 'Author/Series/book.m4b',
+      ),
+    );
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('unchanged audiobook does not re-plan without thorough covers', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    await writeTree(src, { 'Author/book.m4b': 'audio-v1' });
+    await syncJob({ source: src, dest, emit: quietEmit() });
+
+    const { plan } = await planJob({ source: src, dest, emit: quietEmit() });
+    assert.equal(
+      plan.actions.filter((a) => a.type === 'add' || a.type === 'update').length,
+      0,
+    );
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('sidecar jpg change forces paired audiobook update', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    // Real baseline 1×1 JPEG so first sync can write the sidecar
+    const tinyJpg = Buffer.from(
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof' +
+        'Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwh' +
+        'MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAAR' +
+        'CAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEABj8Cf//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAT8hf//Z',
+      'base64',
+    );
+    await fs.promises.mkdir(path.join(src, 'Author'), { recursive: true });
+    await fs.promises.writeFile(path.join(src, 'Author/book.m4b'), 'audio-v1');
+    await fs.promises.writeFile(path.join(src, 'Author/book.jpg'), tinyJpg);
+    await syncJob({ source: src, dest, emit: quietEmit() });
+
+    // Larger content → size change on sidecar
+    const { spawnSync } = await import('node:child_process');
+    const png = path.join(src, 'Author/tmp.png');
+    assert.equal(
+      spawnSync('python3', [
+        '-c',
+        `from PIL import Image; Image.new("RGB",(80,80),(1,2,3)).save(${JSON.stringify(png)})`,
+      ]).status,
+      0,
+    );
+    assert.equal(
+      spawnSync('sips', ['-s', 'format', 'jpeg', png, '--out', path.join(src, 'Author/book.jpg')])
+        .status,
+      0,
+    );
+    await fs.promises.unlink(png);
+
+    const { plan } = await planJob({ source: src, dest, emit: quietEmit() });
+    const audioUp = plan.actions.find(
+      (a) => a.type === 'update' && a.path === 'Author/book.m4a',
+    );
+    assert.ok(audioUp, 'sidecar change should update paired m4a for re-embed');
+    assert.equal(audioUp.reason, 'sidecar-cover');
+    assert.ok(
+      plan.actions.some((a) => a.path === 'Author/book.jpg' && a.type === 'update'),
+    );
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('coverless audiobook settles after apply (no infinite re-plan)', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    // Non-MP4 placeholder (no cover art) — same class as test m4b fixtures
+    await writeTree(src, { 'Author/no-cover.m4b': 'not-a-real-mp4' });
+
+    await syncJob({ source: src, dest, emit: quietEmit() });
+    assert.equal(await exists(path.join(dest, 'Author/no-cover.m4a')), true);
+
+    const { plan } = await planJob({ source: src, dest, emit: quietEmit() });
+    assert.equal(
+      plan.actions.filter((a) => a.type === 'add' || a.type === 'update').length,
+      0,
+      'coverless book must not re-plan transform updates forever',
+    );
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('maps curly-apostrophe source to ASCII dest and cleans old dest path', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    const curlyName = "Sorcerer\u2019s Stone.m4b";
+    await writeTree(src, { [`Author/${curlyName}`]: 'audio' });
+
+    await syncJob({ source: src, dest, emit: quietEmit() });
+    assert.equal(await exists(path.join(dest, "Author/Sorcerer's Stone.m4a")), true);
+    assert.equal(await exists(path.join(dest, `Author/${curlyName}`)), false);
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('converts progressive/oversized JPEG on write; leaves source alone', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    await fs.promises.mkdir(path.join(src, 'Author'), { recursive: true });
+
+    const srcCover = path.join(src, 'Author/cover.jpg');
+    // 700×700 progressive-ish large cover via Pillow + sips
+    const { spawnSync } = await import('node:child_process');
+    const png = path.join(src, 'Author/tmp.png');
+    const py = `
+from PIL import Image
+Image.new("RGB", (700, 700), (10, 80, 200)).save(${JSON.stringify(png)})
+`;
+    assert.equal(spawnSync('python3', ['-c', py]).status, 0);
+    assert.equal(
+      spawnSync('sips', ['-s', 'format', 'jpeg', png, '--out', srcCover], {
+        encoding: 'utf8',
+      }).status,
+      0,
+    );
+    await fs.promises.unlink(png);
+    await writeTree(src, { 'Author/title.epub': 'e' });
+
+    const srcBytes = await fs.promises.readFile(srcCover);
+    await syncJob({ source: src, dest, emit: quietEmit() });
+
+    assert.ok(srcBytes.equals(await fs.promises.readFile(srcCover)), 'source unchanged');
+    assert.equal(await exists(path.join(dest, 'Author/cover.jpg')), true);
+
+    const { inspectJpegFile, H2_JPEG_MAX_EDGE } = await import('../src/transform.js');
+    const destInfo = await inspectJpegFile(path.join(dest, 'Author/cover.jpg'));
+    assert.ok(destInfo);
+    assert.equal(destInfo.progressive, false);
+    assert.ok(Math.max(destInfo.width, destInfo.height) <= H2_JPEG_MAX_EDGE);
 
     await rmrf(vol);
     await rmrf(src);

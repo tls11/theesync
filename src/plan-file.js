@@ -20,7 +20,8 @@ export const PLAN_VERSION = 1;
  *   options: {
  *     noDelete: boolean,
  *     checksum: boolean,
- *     mtimeToleranceMs: number
+ *     mtimeToleranceMs: number,
+ *     thoroughCovers?: boolean
  *   },
  *   counts: {
  *     add: number,
@@ -65,6 +66,7 @@ export function createPlan({
       noDelete: Boolean(options.noDelete),
       checksum: Boolean(options.checksum),
       mtimeToleranceMs: options.mtimeToleranceMs ?? 3000,
+      thoroughCovers: Boolean(options.thoroughCovers),
     },
     counts: {
       ...counts,
@@ -125,13 +127,23 @@ export function validatePlan(plan) {
       throw new Error(`Invalid action kind: ${a.kind}`);
     }
     // Paths in plan are relative; reject absolute, empty, ., ..
-    if (path.isAbsolute(a.path)) {
-      throw new Error(`Unsafe action path: ${a.path}`);
-    }
-    const segs = a.path.split('/');
-    if (segs.some((s) => s === '' || s === '.' || s === '..')) {
-      throw new Error(`Unsafe action path: ${a.path}`);
+    assertSafeRelPath(a.path, 'path');
+    if (a.sourcePath != null) {
+      assertSafeRelPath(a.sourcePath, 'sourcePath');
     }
   }
   return true;
+}
+
+function assertSafeRelPath(rel, label) {
+  if (typeof rel !== 'string' || rel === '') {
+    throw new Error(`Unsafe action ${label}: ${rel}`);
+  }
+  if (path.isAbsolute(rel)) {
+    throw new Error(`Unsafe action ${label}: ${rel}`);
+  }
+  const segs = rel.split('/');
+  if (segs.some((s) => s === '' || s === '.' || s === '..')) {
+    throw new Error(`Unsafe action ${label}: ${rel}`);
+  }
 }

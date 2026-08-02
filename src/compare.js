@@ -17,15 +17,21 @@ export const DEFAULT_MTIME_TOLERANCE_MS = 3000;
  * @typedef {{
  *   type: 'add'|'update'|'delete',
  *   path: string,
+ *   sourcePath?: string,
  *   kind: 'file'|'dir',
  *   size?: number,
  *   mtimeMs?: number,
- *   reason?: string
+ *   reason?: string,
+ *   transform?: string
  * }} PlanAction
  */
 
 /**
  * Compare source and dest inventories; build mutable actions only.
+ *
+ * `path` on file actions is always the **dest** relative path. When the
+ * category remaps names (e.g. Books `.m4b` → `.m4a`), `sourcePath` holds
+ * the source-relative path. Deletes use dest paths only.
  *
  * @param {Map<string, import('./walk.js').WalkEntry>} sourceFiles
  * @param {Map<string, import('./walk.js').WalkEntry>} destFiles
@@ -35,7 +41,12 @@ export const DEFAULT_MTIME_TOLERANCE_MS = 3000;
  *   noDelete?: boolean,
  *   checksum?: boolean,
  *   mtimeToleranceMs?: number,
- *   hashAlgo?: string
+ *   hashAlgo?: string,
+ *   mapDestPath?: (sourceRel: string) => string,
+ *   contentTransformFor?: (sourceRel: string) => string|null|undefined,
+ *   usesMtimeOnlyCompare?: (sourceRel: string) => boolean,
+ *   destStillNeedsTransform?: (sourceRel: string, destAbs: string) => boolean|Promise<boolean>,
+ *   onCollision?: (dest: string, sources: string[]) => void
  * }} options
  */
 export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs, options = {}) {
@@ -43,46 +54,125 @@ export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs,
   const noDelete = Boolean(options.noDelete);
   const useChecksum = Boolean(options.checksum);
   const hashAlgo = options.hashAlgo || 'sha256';
+  const mapDest = options.mapDestPath || ((rel) => rel);
+  const contentTransformFor = options.contentTransformFor || (() => null);
+  const usesMtimeOnly =
+    options.usesMtimeOnlyCompare || ((rel) => Boolean(contentTransformFor(rel)));
 
   /** @type {PlanAction[]} */
   const actions = [];
   let skippedUnchanged = 0;
 
-  // Ensure parent dirs exist on dest for adds (mkdir actions)
-  // We emit dir adds for dirs only on source, not on dest
+  // Dest path → chosen source path (handles m4b/m4a collisions)
+  /** @type {Map<string, string>} */
+  const destToSource = new Map();
+  /** @type {Map<string, string[]>} */
+  const destBuckets = new Map();
+  for (const srcRel of sourceFiles.keys()) {
+    const destRel = mapDest(srcRel);
+    if (!destBuckets.has(destRel)) destBuckets.set(destRel, []);
+    destBuckets.get(destRel).push(srcRel);
+  }
+  for (const [destRel, sources] of destBuckets) {
+    if (sources.length > 1) {
+      options.onCollision?.(destRel, sources);
+      // Prefer source that already matches dest name, else lexical
+      const preferred =
+        sources.find((s) => s === destRel) ||
+        [...sources].sort((a, b) => a.localeCompare(b))[0];
+      destToSource.set(destRel, preferred);
+    } else {
+      destToSource.set(destRel, sources[0]);
+    }
+  }
+
+  // Ensure parent dirs exist on dest for adds (mkdir actions).
+  // Dir paths use the same dest mapping as files (e.g. Books ASCII sanitize).
+  /** @type {Set<string>} */
+  const ownedDestDirs = new Set();
   for (const [rel, sDir] of sourceDirs) {
-    if (!destDirs.has(rel)) {
+    const destRel = mapDest(rel);
+    ownedDestDirs.add(destRel);
+    if (!destDirs.has(destRel)) {
       actions.push({
         type: 'add',
-        path: rel,
+        path: destRel,
+        sourcePath: rel !== destRel ? rel : undefined,
         kind: 'dir',
         mtimeMs: sDir.mtimeMs,
       });
     }
   }
 
-  for (const [rel, sFile] of sourceFiles) {
-    const dFile = destFiles.get(rel);
+  for (const [destRel, srcRel] of destToSource) {
+    const sFile = sourceFiles.get(srcRel);
+    if (!sFile) continue;
+
+    const transform = contentTransformFor(srcRel) || undefined;
+    const sourcePath = srcRel !== destRel ? srcRel : undefined;
+    const mtimeOnly = usesMtimeOnly(srcRel);
+
+    const dFile = destFiles.get(destRel);
     if (!dFile) {
       actions.push({
         type: 'add',
-        path: rel,
+        path: destRel,
+        sourcePath,
         kind: 'file',
         size: sFile.size,
         mtimeMs: sFile.mtimeMs,
         reason: 'missing',
+        transform,
       });
+      continue;
+    }
+
+    // Content transforms (e.g. JPEG re-encode, cover re-embed) change size;
+    // treat as unchanged when mtimes match — unless dest still fails H2 checks
+    // (e.g. progressive JPEG left by an older convert path).
+    if (mtimeOnly) {
+      const mtimeDiff = Math.abs(sFile.mtimeMs - dFile.mtimeMs);
+      if (mtimeDiff > mtimeTol) {
+        actions.push({
+          type: 'update',
+          path: destRel,
+          sourcePath,
+          kind: 'file',
+          size: sFile.size,
+          mtimeMs: sFile.mtimeMs,
+          reason: 'mtime',
+          transform,
+        });
+      } else if (
+        options.destStillNeedsTransform &&
+        (await options.destStillNeedsTransform(srcRel, dFile.abs))
+      ) {
+        actions.push({
+          type: 'update',
+          path: destRel,
+          sourcePath,
+          kind: 'file',
+          size: sFile.size,
+          mtimeMs: sFile.mtimeMs,
+          reason: 'transform',
+          transform,
+        });
+      } else {
+        skippedUnchanged += 1;
+      }
       continue;
     }
 
     if (sFile.size !== dFile.size) {
       actions.push({
         type: 'update',
-        path: rel,
+        path: destRel,
+        sourcePath,
         kind: 'file',
         size: sFile.size,
         mtimeMs: sFile.mtimeMs,
         reason: 'size',
+        transform,
       });
       continue;
     }
@@ -97,20 +187,24 @@ export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs,
         }
         actions.push({
           type: 'update',
-          path: rel,
+          path: destRel,
+          sourcePath,
           kind: 'file',
           size: sFile.size,
           mtimeMs: sFile.mtimeMs,
           reason: 'checksum',
+          transform,
         });
       } else {
         actions.push({
           type: 'update',
-          path: rel,
+          path: destRel,
+          sourcePath,
           kind: 'file',
           size: sFile.size,
           mtimeMs: sFile.mtimeMs,
           reason: 'mtime',
+          transform,
         });
       }
       continue;
@@ -122,11 +216,13 @@ export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs,
       if (!same) {
         actions.push({
           type: 'update',
-          path: rel,
+          path: destRel,
+          sourcePath,
           kind: 'file',
           size: sFile.size,
           mtimeMs: sFile.mtimeMs,
           reason: 'checksum',
+          transform,
         });
         continue;
       }
@@ -136,9 +232,9 @@ export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs,
   }
 
   if (!noDelete) {
-    // Delete dest files not in source
+    // Delete dest files not owned by any mapped source path
     for (const [rel] of destFiles) {
-      if (!sourceFiles.has(rel)) {
+      if (!destToSource.has(rel)) {
         actions.push({
           type: 'delete',
           path: rel,
@@ -148,9 +244,9 @@ export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs,
       }
     }
 
-    // Delete dest dirs not in source (deepest first — apply will sort)
+    // Delete dest dirs not owned by mapped source dirs (deepest first — apply sorts)
     for (const [rel] of destDirs) {
-      if (!sourceDirs.has(rel)) {
+      if (!ownedDestDirs.has(rel)) {
         actions.push({
           type: 'delete',
           path: rel,
