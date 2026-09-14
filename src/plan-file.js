@@ -21,7 +21,9 @@ export const PLAN_VERSION = 1;
  *     noDelete: boolean,
  *     checksum: boolean,
  *     mtimeToleranceMs: number,
- *     thoroughCovers?: boolean
+ *     thoroughCovers?: boolean,
+ *     excludeSource?: string[],
+ *     excludeDest?: string[]
  *   },
  *   counts: {
  *     add: number,
@@ -67,6 +69,8 @@ export function createPlan({
       checksum: Boolean(options.checksum),
       mtimeToleranceMs: options.mtimeToleranceMs ?? 3000,
       thoroughCovers: Boolean(options.thoroughCovers),
+      excludeSource: Array.isArray(options.excludeSource) ? [...options.excludeSource] : [],
+      excludeDest: Array.isArray(options.excludeDest) ? [...options.excludeDest] : [],
     },
     counts: {
       ...counts,

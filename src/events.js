@@ -88,8 +88,18 @@ export function summaryPayload({
 
 function formatHuman(event, verbose) {
   switch (event.type) {
-    case 'start':
-      return `→ ${event.phase || 'sync'}: ${event.source || ''} → ${event.dest || ''}`;
+    case 'start': {
+      let line = `→ ${event.phase || 'sync'}: ${event.source || ''} → ${event.dest || ''}`;
+      const skipN = Array.isArray(event.excludeSource) ? event.excludeSource.length : 0;
+      const keepN = Array.isArray(event.excludeDest) ? event.excludeDest.length : 0;
+      if (skipN || keepN) {
+        const bits = [];
+        if (skipN) bits.push(`skip ${skipN}`);
+        if (keepN) bits.push(`keep ${keepN}`);
+        line += ` (${bits.join(', ')})`;
+      }
+      return line;
+    }
     case 'scan': {
       const side = event.side === 'source' ? 'source library' : 'dest category';
       // Dest scan with hidden inventory can look huge; keep simple unless verbose

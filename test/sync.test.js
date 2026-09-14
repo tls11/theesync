@@ -116,6 +116,46 @@ describe('sync plan/apply', () => {
     assert.equal(await exists(path.join(dest, 'Tool', '._cover')), false);
   });
 
+  it('source skip omits copy; dest copy is deleted when deletes are on', async () => {
+    await syncJob({ source: src, dest, emit: quietEmit() });
+    const skip = ['Tool/Lateralus (2001)'];
+    const { plan } = await planJob({
+      source: src,
+      dest,
+      excludeSource: skip,
+      emit: quietEmit(),
+    });
+    assert.equal(plan.options.excludeSource.join('\0'), skip.join('\0'));
+    assert.ok(
+      !plan.actions.some(
+        (a) => (a.type === 'add' || a.type === 'update') && String(a.path).includes('Lateralus'),
+      ),
+    );
+    const dels = plan.actions.filter((a) => a.type === 'delete');
+    assert.ok(dels.some((a) => a.path === 'Tool/Lateralus (2001)/01 - Schism.flac'));
+    await applyPlan(plan, { emit: quietEmit() });
+    assert.equal(await exists(path.join(dest, 'Tool/Lateralus (2001)/01 - Schism.flac')), false);
+    assert.equal(await exists(path.join(dest, 'Nirvana/Nevermind/01 - Smells.flac')), true);
+  });
+
+  it('source skip + dest keep leaves dest copy in place', async () => {
+    await syncJob({ source: src, dest, emit: quietEmit() });
+    const { plan } = await planJob({
+      source: src,
+      dest,
+      excludeSource: ['Tool/Lateralus (2001)'],
+      excludeDest: ['Tool/Lateralus (2001)'],
+      emit: quietEmit(),
+    });
+    const dels = plan.actions.filter((a) => a.type === 'delete');
+    assert.ok(dels.every((a) => !String(a.path).includes('Lateralus')));
+    await applyPlan(plan, { emit: quietEmit() });
+    assert.equal(
+      await exists(path.join(dest, 'Tool/Lateralus (2001)/01 - Schism.flac')),
+      true,
+    );
+  });
+
   it('--no-delete skips deletions', async () => {
     await syncJob({ source: src, dest, emit: quietEmit() });
     await fs.promises.writeFile(path.join(dest, 'orphan.flac'), 'x');
@@ -246,6 +286,37 @@ describe('Books category', () => {
     assert.equal(await exists(path.join(dest, 'Author/title.epub')), true);
     assert.equal(await exists(path.join(dest, 'Author/notes.txt')), true);
     assert.equal(await exists(path.join(vol, '.rockbox')), true);
+
+    await rmrf(vol);
+    await rmrf(src);
+  });
+
+  it('source skip uses library paths; dest keep uses card paths', async () => {
+    const vol = await makeFakeVolume({ withBooks: true });
+    const dest = path.join(vol, 'Books');
+    const src = await makeTempRoot();
+    const srcRel = "Author/Book\u2019s Title";
+    await writeTree(src, {
+      [`${srcRel}/book.epub`]: 'ebook',
+      'Other/keep.epub': 'ok',
+    });
+    await syncJob({ source: src, dest, emit: quietEmit() });
+    const destFolder = "Author/Book's Title";
+    assert.equal(await exists(path.join(dest, destFolder, 'book.epub')), true);
+
+    const { plan } = await planJob({
+      source: src,
+      dest,
+      excludeSource: [srcRel],
+      excludeDest: [destFolder],
+      emit: quietEmit(),
+    });
+    assert.ok(
+      plan.actions.every((a) => a.type !== 'delete' || !String(a.path).startsWith(destFolder)),
+    );
+    await applyPlan(plan, { emit: quietEmit() });
+    assert.equal(await exists(path.join(dest, destFolder, 'book.epub')), true);
+    assert.equal(await exists(path.join(dest, 'Other/keep.epub')), true);
 
     await rmrf(vol);
     await rmrf(src);

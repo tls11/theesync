@@ -151,6 +151,7 @@ theesync-cli apply -p /tmp/music.plan.json -v
 | `plan` | Scan/compare only; optional `--write-plan` |
 | `apply` | Execute a plan file (no re-scan) |
 | `categories` | Print allowlist (`--json` for `["Music","Books"]`) |
+| `list-dirs` | Immediate non-hidden children of `--root` (`--json` for `{ root, dirs, files }`) |
 
 ### Flags
 
@@ -161,6 +162,8 @@ theesync-cli apply -p /tmp/music.plan.json -v
 | `--category` | Sugar when `-d` is the volume root |
 | `--dry-run` | Plan only; no writes |
 | `--no-delete` | Skip **library** deletion phase (metadata cleanup still runs) |
+| `--exclude-source <rel>` | Skip copying this source-relative folder (repeatable) |
+| `--exclude-dest <rel>` | Never library-delete this dest-relative folder (repeatable) |
 | `--checksum` | When sizes match, compare SHA-256 |
 | `--mtime-tolerance <ms>` | FAT32 mtime slop (default **3000**) |
 | `--require-rockbox` | Fail if volume has no `.rockbox*` / `update.upt` |
@@ -182,7 +185,7 @@ With `--json-lines`, stdout is one JSON object per line. Every event has `schema
 
 | type | Purpose |
 |------|---------|
-| `start` | phase, source, dest |
+| `start` | phase, source, dest, excludeSource, excludeDest |
 | `scan` | side, files, dirs |
 | `plan` | add, update, delete (library), addFiles, addDirs, … |
 | `action` | op, path (`-v` only; junk deletes tagged when verbose) |
@@ -237,6 +240,23 @@ On FAT32, macOS often creates AppleDouble **`._*`** next to files and **`.DS_Sto
 - **Copy:** non-dot temp beside target → rename; preserve mtime  
 - **Paths:** exact string match (no Unicode NFC); soft warn on non-ASCII  
 
+### Skip / keep (folders or tracks)
+
+Two independent per-job lists. Relative paths, `/`-separated, segment-aware (`Tool` matches `Tool/Lateralus` and `Tool/Lateralus/01.flac`, not `Toolbox`). A track path matches only that file.
+
+| List | Relative to | Effect |
+|------|-------------|--------|
+| **Skip on source** (`--exclude-source`) | Source library | Path is not walked or copied. Dest copies become dest-only → **deleted** unless No delete is on or the dest path is in Keep. |
+| **Keep on dest** (`--exclude-dest`) | Dest category (card names; Books after ASCII / `.m4a` mapping) | Library deletes skip that path, its contents, and ancestor dirs that would otherwise fail `ENOTEMPTY`. Adds/updates still run. macOS junk inside is still cleaned. |
+
+```bash
+theesync-cli plan -s ~/Music/library -d /Volumes/H2/Music \
+  --exclude-source "Tool/Lateralus (2001)" \
+  --exclude-dest Playlists
+```
+
+Skipping an album does **not** automatically keep the dest copy. To leave it on the card without syncing it, add the dest path to Keep as well.
+
 ## Desktop UI
 
 Tauri 2 app under `app/`. Sync logic stays in Node; Rust handles dialogs, volume probe, spawn/kill, events.
@@ -255,6 +275,7 @@ Needs **Node ≥ 20** and the repo’s `bin/theesync.js`.
 - **Jobs:** source + **volume** (card root) + **category** dropdown → **Writes to** = `volume/category`  
 - Categories loaded from the engine (`categories --json`); **Reload categories** after editing the allowlist  
 - Persist jobs/toggles in `localStorage`  
+- Per-job **Skip** / **Keep** (folder or track) — job card shows a count; the picker is where you add, unskip, and clear  
 - Per-job Rockbox badge on the volume  
 - Toggles: **No delete**, **Checksum**, **Require Rockbox markers**  
 - **Dry run selected** / **Sync selected** (batch; cancel aborts remaining jobs)  
@@ -272,6 +293,7 @@ app/
 ```text
 bin/theesync.js           CLI entry
 src/cli.js                commander interface
+src/exclude.js            source-skip / dest-keep path matching
 src/config/categories.js  allowlisted category names (edit here)
 src/safety.js             root protection, path bounds
 src/walk.js               tree walk + skip rules

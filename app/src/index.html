@@ -80,6 +80,32 @@
         <div id="summary" class="summary"></div>
       </section>
     </div>
+
+    <div id="folder-sheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-sheet-close></div>
+      <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="folder-sheet-title">
+        <div class="sheet-head">
+          <h2 id="folder-sheet-title">Skip from source</h2>
+          <button type="button" class="btn btn-ghost btn-sm" data-sheet-close>Close</button>
+        </div>
+        <div class="sheet-split">
+          <div id="folder-sheet-selected" class="sheet-selected" hidden></div>
+          <div id="folder-sheet-split" class="sheet-split-handle" hidden title="Drag to resize"></div>
+          <div class="sheet-browse">
+            <div id="folder-sheet-crumb" class="sheet-crumb"></div>
+            <div id="folder-sheet-current" class="sheet-current" hidden>
+              <button type="button" id="folder-sheet-toggle" class="btn btn-sm btn-primary">Skip this folder</button>
+            </div>
+            <div id="folder-sheet-list" class="sheet-list"></div>
+          </div>
+        </div>
+        <div class="sheet-foot">
+          <button type="button" id="folder-sheet-finder" class="btn btn-ghost btn-sm">Choose in Finder…</button>
+          <button type="button" id="folder-sheet-done" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="main.js"></script>
   </body>
 </html>

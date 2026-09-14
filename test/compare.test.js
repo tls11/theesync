@@ -104,6 +104,46 @@ describe('buildActions', () => {
     assert.equal(actions.filter((a) => a.type === 'delete').length, 0);
   });
 
+  it('excludeDest omits library deletes but still plans junk cleanup', async () => {
+    const destFiles = new Map([
+      ['KeepMe/sub/track.flac', { rel: 'KeepMe/sub/track.flac', abs: '/tmp/k', size: 1, mtimeMs: 0, isDir: false }],
+      ['KeepMe/._cover', { rel: 'KeepMe/._cover', abs: '/tmp/j', size: 1, mtimeMs: 0, isDir: false }],
+      ['orphan.flac', { rel: 'orphan.flac', abs: '/tmp/o', size: 1, mtimeMs: 0, isDir: false }],
+    ]);
+    const destDirs = new Map([
+      ['KeepMe', { rel: 'KeepMe', abs: '/tmp/KeepMe', size: 0, mtimeMs: 0, isDir: true }],
+      ['KeepMe/sub', { rel: 'KeepMe/sub', abs: '/tmp/KeepMe/sub', size: 0, mtimeMs: 0, isDir: true }],
+    ]);
+    const { actions } = await buildActions(
+      new Map(),
+      destFiles,
+      new Map(),
+      destDirs,
+      { excludeDest: ['KeepMe/sub'] },
+    );
+    const dels = actions.filter((a) => a.type === 'delete').map((a) => `${a.kind}:${a.path}`);
+    assert.ok(dels.includes('file:orphan.flac'));
+    assert.ok(dels.includes('file:KeepMe/._cover'));
+    assert.equal(dels.includes('file:KeepMe/sub/track.flac'), false);
+    assert.equal(dels.includes('dir:KeepMe/sub'), false);
+    assert.equal(dels.includes('dir:KeepMe'), false);
+  });
+
+  it('Books dest keep uses mapped dest paths, not source paths', async () => {
+    const srcFiles = new Map();
+    const destFiles = new Map([
+      ['Author/book.m4a', { rel: 'Author/book.m4a', abs: '/tmp/b', size: 1, mtimeMs: 0, isDir: false }],
+    ]);
+    const destDirs = new Map([
+      ['Author', { rel: 'Author', abs: '/tmp/Author', size: 0, mtimeMs: 0, isDir: true }],
+    ]);
+    const { actions } = await buildActions(srcFiles, destFiles, new Map(), destDirs, {
+      mapDestPath: (rel) => (rel.endsWith('.m4b') ? rel.replace(/\.m4b$/, '.m4a') : rel),
+      excludeDest: ['Author'],
+    });
+    assert.equal(actions.filter((a) => a.type === 'delete').length, 0);
+  });
+
   it('mtime within tolerance is unchanged', async () => {
     const root = await makeTempRoot();
     await writeTree(root, { 'f.txt': 'same' });

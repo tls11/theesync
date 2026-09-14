@@ -6,11 +6,15 @@
  * theesync apply -p|--plan <file> [--json-lines] [-v]
  */
 
+import fs from 'node:fs';
 import { Command } from 'commander';
 import { syncJob, runPlan, runApply, SafetyError } from './sync.js';
 import { createEmitter } from './events.js';
 import { ALLOWED_CATEGORIES } from './config/categories.js';
 import { DEFAULT_MTIME_TOLERANCE_MS } from './compare.js';
+import { normalizeExcludeList, ExcludeError } from './exclude.js';
+import { resolveAbs } from './safety.js';
+import { listImmediateEntries } from './walk.js';
 
 export const EXIT_OK = 0;
 export const EXIT_RUNTIME = 1;
@@ -40,7 +44,34 @@ function addCommonOptions(cmd) {
     )
     .option('--require-rockbox', 'fail if volume has no .rockbox / update.upt', false)
     .option('--json-lines', 'emit NDJSON events on stdout', false)
-    .option('-v, --verbose', 'verbose action logging', false);
+    .option('-v, --verbose', 'verbose action logging', false)
+    .option(
+      '--exclude-source <rel>',
+      'skip copying this source-relative folder or file (repeatable)',
+      collectRel,
+      [],
+    )
+    .option(
+      '--exclude-dest <rel>',
+      'never library-delete this dest-relative folder or file (repeatable)',
+      collectRel,
+      [],
+    );
+}
+
+function collectRel(value, previous) {
+  return [...(previous || []), value];
+}
+
+function parseExcludeList(raw, flag) {
+  try {
+    return normalizeExcludeList(raw);
+  } catch (err) {
+    if (err instanceof ExcludeError) {
+      throw new UsageError(`${flag}: ${err.message}`);
+    }
+    throw err;
+  }
 }
 
 function parseMtime(opts) {
@@ -76,6 +107,8 @@ export function hasPartialJobFlags(opts) {
   if (opts.category) return true;
   if (opts.delete === false) return true;
   if (opts.noDelete === true) return true;
+  if (Array.isArray(opts.excludeSource) && opts.excludeSource.length > 0) return true;
+  if (Array.isArray(opts.excludeDest) && opts.excludeDest.length > 0) return true;
   // mtimeTolerance is always set by default string — only count if non-default
   if (
     opts.mtimeTolerance != null &&
@@ -101,6 +134,8 @@ function buildJobOptions(opts, extra = {}) {
     checksum: Boolean(opts.checksum),
     mtimeToleranceMs: parseMtime(opts),
     thoroughCovers: Boolean(opts.thoroughCovers),
+    excludeSource: parseExcludeList(opts.excludeSource, '--exclude-source'),
+    excludeDest: parseExcludeList(opts.excludeDest, '--exclude-dest'),
     requireRockbox: Boolean(opts.requireRockbox),
     writePlan: opts.writePlan,
     jsonLines: Boolean(opts.jsonLines),
@@ -222,6 +257,29 @@ export async function runCli(argv = process.argv) {
       }
     });
 
+  program
+    .command('list-dirs')
+    .description('List immediate non-hidden child dirs and files of a root (UI picker)')
+    .requiredOption('--root <path>', 'directory to list')
+    .option('--json', 'print JSON { root, dirs, files }', false)
+    .action(async (opts) => {
+      const root = resolveAbs(opts.root);
+      if (!fs.existsSync(root)) {
+        throw new UsageError(`Root does not exist: ${root}`);
+      }
+      const st = fs.statSync(root);
+      if (!st.isDirectory()) {
+        throw new UsageError(`Root is not a directory: ${root}`);
+      }
+      const { dirs, files } = await listImmediateEntries(root);
+      if (opts.json) {
+        process.stdout.write(JSON.stringify({ root, dirs, files }) + '\n');
+      } else {
+        const lines = [...dirs.map((d) => `${d}/`), ...files];
+        if (lines.length) process.stdout.write(lines.join('\n') + '\n');
+      }
+    });
+
   try {
     await program.parseAsync(argv);
     return EXIT_OK;
@@ -234,7 +292,9 @@ export async function runCli(argv = process.argv) {
     }
 
     const code =
-      err instanceof UsageError || err.exitCode === EXIT_USAGE
+      err instanceof UsageError ||
+      err instanceof ExcludeError ||
+      err.exitCode === EXIT_USAGE
         ? EXIT_USAGE
         : err instanceof SafetyError || err.name === 'SafetyError'
           ? EXIT_RUNTIME
@@ -255,7 +315,11 @@ export async function runCli(argv = process.argv) {
       });
     }
 
-    if (err instanceof UsageError || err.exitCode === EXIT_USAGE) {
+    if (
+      err instanceof UsageError ||
+      err instanceof ExcludeError ||
+      err.exitCode === EXIT_USAGE
+    ) {
       process.stderr.write(`Error: ${message}\n`);
       return EXIT_USAGE;
     }

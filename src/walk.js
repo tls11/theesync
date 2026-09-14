@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { nonAsciiWarning } from './safety.js';
+import { isUnderAnyPrefix } from './exclude.js';
 
 /**
  * Should this basename be skipped when walking source (or ignored for inventory)?
@@ -39,16 +40,19 @@ export function isMacOsMetadataPath(relPath) {
  * @param {{
  *   includeDirs?: boolean,
  *   includeHidden?: boolean,
+ *   excludePrefixes?: string[],
  *   onSkip?: (rel: string, reason: string) => void,
  *   onWarning?: (msg: string) => void
  * }} options
  *   includeHidden: when false (default), skip all dot-names (macOS ._* / .DS_Store).
  *   Used for both source and dest so FAT32 AppleDouble sidecars are not treated as library files.
+ *   excludePrefixes: skip these relative folders and everything under them (source skip).
  * @returns {Promise<{ files: Map<string, WalkEntry>, dirs: Map<string, WalkEntry>, skipped: number, warnings: string[] }>}
  */
 export async function walkTree(rootAbs, options = {}) {
   const includeDirs = options.includeDirs !== false;
   const includeHidden = Boolean(options.includeHidden);
+  const excludePrefixes = Array.isArray(options.excludePrefixes) ? options.excludePrefixes : [];
   const files = new Map();
   const dirs = new Map();
   let skipped = 0;
@@ -73,6 +77,12 @@ export async function walkTree(rootAbs, options = {}) {
       if (!includeHidden && shouldSkipName(name)) {
         skipped += 1;
         options.onSkip?.(relKey, 'hidden');
+        continue;
+      }
+
+      if (excludePrefixes.length && isUnderAnyPrefix(relKey, excludePrefixes)) {
+        skipped += 1;
+        options.onSkip?.(relKey, 'excluded');
         continue;
       }
 
@@ -135,6 +145,7 @@ export async function walkTree(rootAbs, options = {}) {
 export function walkTreeSync(rootAbs, options = {}) {
   const includeDirs = options.includeDirs !== false;
   const includeHidden = Boolean(options.includeHidden);
+  const excludePrefixes = Array.isArray(options.excludePrefixes) ? options.excludePrefixes : [];
   const files = new Map();
   const dirs = new Map();
   let skipped = 0;
@@ -157,6 +168,12 @@ export function walkTreeSync(rootAbs, options = {}) {
       if (!includeHidden && shouldSkipName(name)) {
         skipped += 1;
         options.onSkip?.(relKey, 'hidden');
+        continue;
+      }
+
+      if (excludePrefixes.length && isUnderAnyPrefix(relKey, excludePrefixes)) {
+        skipped += 1;
+        options.onSkip?.(relKey, 'excluded');
         continue;
       }
 
@@ -209,4 +226,49 @@ export function walkTreeSync(rootAbs, options = {}) {
 
   walk(rootAbs, '');
   return { files, dirs, skipped, warnings };
+}
+
+/**
+ * Immediate non-hidden children of rootAbs (no recurse).
+ * Skips dot-names and symlinks — same policy as walkTree.
+ * @param {string} rootAbs
+ * @returns {Promise<{ dirs: string[], files: string[] }>}
+ */
+export async function listImmediateEntries(rootAbs) {
+  const abs = path.resolve(rootAbs);
+  let entries;
+  try {
+    entries = await fs.promises.readdir(abs, { withFileTypes: true });
+  } catch (err) {
+    throw new Error(`Cannot read directory ${abs}: ${err.message}`);
+  }
+
+  const dirs = [];
+  const files = [];
+  for (const ent of entries) {
+    if (shouldSkipName(ent.name)) continue;
+    const childAbs = path.join(abs, ent.name);
+    let st;
+    try {
+      st = await fs.promises.lstat(childAbs);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) dirs.push(ent.name);
+    else if (st.isFile()) files.push(ent.name);
+  }
+  dirs.sort((a, b) => a.localeCompare(b));
+  files.sort((a, b) => a.localeCompare(b));
+  return { dirs, files };
+}
+
+/**
+ * Immediate non-hidden child directory names of rootAbs (no recurse).
+ * @param {string} rootAbs
+ * @returns {Promise<string[]>}
+ */
+export async function listImmediateDirs(rootAbs) {
+  const { dirs } = await listImmediateEntries(rootAbs);
+  return dirs;
 }

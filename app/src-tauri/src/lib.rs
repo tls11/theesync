@@ -259,17 +259,27 @@ fn path_exists(path: String) -> bool {
 }
 
 /// Native folder picker. Returns absolute path or null if cancelled.
+/// Optional `directory` is the starting folder (e.g. job source or dest).
 #[tauri::command]
-async fn pick_directory(app: AppHandle, title: Option<String>) -> Result<Option<String>, String> {
+async fn pick_directory(
+    app: AppHandle,
+    title: Option<String>,
+    directory: Option<String>,
+) -> Result<Option<String>, String> {
     let title = title.unwrap_or_else(|| "Select folder".into());
     let (tx, rx) = tokio::sync::oneshot::channel();
 
-    app.dialog()
-        .file()
-        .set_title(&title)
-        .pick_folder(move |folder| {
-            let _ = tx.send(folder);
-        });
+    let mut dialog = app.dialog().file().set_title(&title);
+    if let Some(dir) = directory {
+        let pb = PathBuf::from(dir);
+        if pb.is_dir() {
+            dialog = dialog.set_directory(&pb);
+        }
+    }
+
+    dialog.pick_folder(move |folder| {
+        let _ = tx.send(folder);
+    });
 
     let folder = rx.await.map_err(|e| e.to_string())?;
     Ok(folder.and_then(|fp: FilePath| {
@@ -714,6 +724,50 @@ fn list_categories() -> Result<Vec<String>, String> {
     Ok(list)
 }
 
+/// Immediate non-hidden children of `root` (UI skip/keep picker).
+/// Matches engine `shouldSkipName`: skip any name starting with `.`, and skip symlinks.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubdirList {
+    pub root: String,
+    pub dirs: Vec<String>,
+    pub files: Vec<String>,
+}
+
+#[tauri::command]
+fn list_subdirs(root: String) -> Result<SubdirList, String> {
+    let p = PathBuf::from(root.trim());
+    if !p.is_dir() {
+        return Err(format!("Not a directory: {}", p.display()));
+    }
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(&p).map_err(|e| e.to_string())?;
+    for ent in entries.flatten() {
+        let name = ent.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let Ok(ft) = ent.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            dirs.push(name_str.into_owned());
+        } else if ft.is_file() {
+            files.push(name_str.into_owned());
+        }
+    }
+    dirs.sort();
+    files.sort();
+    Ok(SubdirList {
+        root: p.to_string_lossy().into_owned(),
+        dirs,
+        files,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -737,6 +791,7 @@ pub fn run() {
             run_theesync,
             plan_delete_count,
             list_categories,
+            list_subdirs,
         ])
         .setup(|app| {
             // Best-effort: log engine path at startup in dev

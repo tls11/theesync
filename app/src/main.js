@@ -4,7 +4,7 @@
  * Dest = volumeRoot + "/" + category (derived, not free-typed).
  */
 
-const STORAGE_KEY = "theesync.jobs.v2";
+const STORAGE_KEY = "theesync.jobs.v3";
 const DEFAULT_VOLUME = "/Volumes/H2";
 /** Fallback if engine is unavailable at first paint */
 const FALLBACK_CATEGORIES = ["Music", "Books"];
@@ -20,6 +20,119 @@ function jobDest(job) {
   return `${vol}/${cat}`;
 }
 
+/** Browser-side copy of engine normalizeExcludeRel; invalid → null. */
+function normalizeExcludeRelUi(rel) {
+  let s = String(rel ?? "").trim().replace(/\\/g, "/");
+  if (!s || s.startsWith("/")) return null;
+  s = s.replace(/\/+$/, "");
+  if (!s) return null;
+  const segs = s.split("/");
+  if (segs.some((seg) => seg === "" || seg === "." || seg === "..")) return null;
+  return s;
+}
+
+function normalizeStoredList(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    const n = normalizeExcludeRelUi(item);
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
+function excludeKey(side) {
+  return side === "dest" ? "excludeDest" : "excludeSource";
+}
+
+function addExclude(job, side, rel) {
+  if (running) return false;
+  const n = normalizeExcludeRelUi(rel);
+  if (!n) return false;
+  const key = excludeKey(side);
+  if (!Array.isArray(job[key])) job[key] = [];
+  if (!job[key].includes(n)) job[key].push(n);
+  job[key].sort((a, b) => a.localeCompare(b));
+  return true;
+}
+
+function toggleExclude(job, side, rel) {
+  if (running) return;
+  const n = normalizeExcludeRelUi(rel);
+  if (!n) return;
+  const key = excludeKey(side);
+  if (!Array.isArray(job[key])) job[key] = [];
+  const i = job[key].indexOf(n);
+  if (i >= 0) job[key].splice(i, 1);
+  else {
+    job[key].push(n);
+    job[key].sort((a, b) => a.localeCompare(b));
+  }
+}
+
+function isUnderPrefixUi(rel, prefix) {
+  if (!rel || !prefix) return false;
+  return rel === prefix || rel.startsWith(`${prefix}/`);
+}
+
+/** Stored prefix that covers rel, if any (exact or ancestor). */
+function coveringExclude(rel, prefixes) {
+  if (!rel || !prefixes) return null;
+  for (const p of prefixes) {
+    if (isUnderPrefixUi(rel, p)) return p;
+  }
+  return null;
+}
+
+function jobCollapsedSummary(job) {
+  const dest = jobDest(job) || "—";
+  const skip = (job.excludeSource || []).length;
+  const keep = (job.excludeDest || []).length;
+  const bits = [dest];
+  if (skip) bits.push(`skip ${skip}`);
+  if (keep) bits.push(`keep ${keep}`);
+  return bits.join(" · ");
+}
+
+/** Label for logs/dialogs; dest category if the nickname is empty. */
+function jobTitle(job) {
+  const label = String(job.label || "").trim();
+  if (label) return label;
+  return job.category || "Job";
+}
+
+function firstUnusedCategory() {
+  const used = new Set(state.jobs.map((j) => j.category));
+  return categories.find((c) => !used.has(c)) || categories[0] || "Music";
+}
+
+function excludeUndoLabel(side) {
+  return side === "dest" ? "Don't keep" : "Unskip";
+}
+
+function excludeActionLabel(side, selected) {
+  if (side === "source") return selected ? "Unskip" : "Skip";
+  return selected ? "Don't keep" : "Keep";
+}
+
+function excludeOpenLabel(side, n) {
+  const base = side === "dest" ? "Keep" : "Skip";
+  return n ? `${base} · ${n}` : base;
+}
+
+function relUnderRoot(root, abs) {
+  const r = String(root || "").replace(/\/+$/, "");
+  const a = String(abs || "").replace(/\/+$/, "");
+  if (!r || !a) return null;
+  if (a === r) return null;
+  const prefix = r.endsWith("/") ? r : `${r}/`;
+  if (!a.startsWith(prefix)) return null;
+  return normalizeExcludeRelUi(a.slice(prefix.length));
+}
+
 function defaultJobs(categories = FALLBACK_CATEGORIES) {
   const cats = categories.length ? categories : FALLBACK_CATEGORIES;
   return cats.map((category) => ({
@@ -30,6 +143,8 @@ function defaultJobs(categories = FALLBACK_CATEGORIES) {
     source: "",
     volumeRoot: DEFAULT_VOLUME,
     category,
+    excludeSource: [],
+    excludeDest: [],
   }));
 }
 
@@ -58,18 +173,23 @@ function normalizeJob(raw, categories) {
 
   return {
     id: raw.id || uid(),
-    label: raw.label || category,
+    label: raw.label != null ? String(raw.label) : category,
     enabled: raw.enabled !== false,
     collapsed: Boolean(raw.collapsed),
     source: raw.source || "",
     volumeRoot,
     category,
+    excludeSource: normalizeStoredList(raw.excludeSource),
+    excludeDest: normalizeStoredList(raw.excludeDest),
   };
 }
 
 function loadState(categories) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("theesync.jobs.v1");
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ||
+      localStorage.getItem("theesync.jobs.v2") ||
+      localStorage.getItem("theesync.jobs.v1");
     if (!raw) {
       return {
         jobs: defaultJobs(categories),
@@ -115,6 +235,8 @@ function saveState(state) {
         source: j.source,
         volumeRoot: j.volumeRoot,
         category: j.category,
+        excludeSource: normalizeStoredList(j.excludeSource),
+        excludeDest: normalizeStoredList(j.excludeDest),
       })),
       noDelete: state.noDelete,
       checksum: state.checksum,
@@ -171,6 +293,12 @@ function setBusy(busy) {
   $("btn-add-job").disabled = busy;
   $("btn-reload-categories").disabled = busy;
   $("btn-cancel").disabled = !busy;
+  if (busy && folderSheet) closeFolderSheet();
+  if (jobsEl) {
+    for (const btn of jobsEl.querySelectorAll(".btn-browse-skip, .btn-browse-keep")) {
+      btn.disabled = busy;
+    }
+  }
 }
 
 function selectedJobs() {
@@ -184,6 +312,17 @@ function commonFlags() {
   if (state.thoroughCovers) flags.push("--thorough-covers");
   if (state.requireRockbox) flags.push("--require-rockbox");
   if (state.verbose) flags.push("-v");
+  return flags;
+}
+
+function jobExcludeFlags(job) {
+  const flags = [];
+  for (const rel of job.excludeSource || []) {
+    flags.push("--exclude-source", rel);
+  }
+  for (const rel of job.excludeDest || []) {
+    flags.push("--exclude-dest", rel);
+  }
   return flags;
 }
 
@@ -223,9 +362,6 @@ function reconcileJobsWithCategories() {
   for (const job of state.jobs) {
     if (!categories.includes(job.category)) {
       job.category = categories[0];
-      if (!job.label || FALLBACK_CATEGORIES.includes(job.label)) {
-        job.label = job.category;
-      }
     }
   }
   saveState(state);
@@ -290,8 +426,8 @@ function renderJobs() {
         <label class="check" title="Include in Dry run / Sync">
           <input type="checkbox" class="job-enabled" ${job.enabled ? "checked" : ""} />
         </label>
-        <input type="text" class="job-label" value="${escapeAttr(job.label)}" placeholder="Job label" />
-        <span class="job-collapsed-summary" title="Writes to">${escapeAttr(dest || "—")}</span>
+        <input type="text" class="job-label" value="${escapeAttr(job.label)}" placeholder="Job name" />
+        <span class="job-collapsed-summary" title="${escapeAttr(jobCollapsedSummary(job))}">${escapeAttr(jobCollapsedSummary(job))}</span>
         <button type="button" class="job-remove" title="Remove job">Remove</button>
       </div>
 
@@ -304,6 +440,11 @@ function renderJobs() {
               <label>Source</label>
               <input type="text" class="job-source" value="${escapeAttr(job.source)}" placeholder="/Users/you/Music/library" />
               <button type="button" class="btn btn-sm btn-browse-source">Browse</button>
+            </div>
+            <div class="folder-excludes">
+              <div class="folder-excludes-label">Skip</div>
+              <p class="job-section-hint">Folder or track, not copied. Already on the card → deleted unless Keep (or No delete).</p>
+              <button type="button" class="btn btn-sm btn-browse-skip">${escapeAttr(excludeOpenLabel("source", (job.excludeSource || []).length))}</button>
             </div>
           </div>
 
@@ -326,6 +467,11 @@ function renderJobs() {
               <span></span>
             </div>
             <div class="badge job-badge"><span class="dot"></span><span class="badge-text">Checking…</span></div>
+            <div class="folder-excludes">
+              <div class="folder-excludes-label">Keep</div>
+              <p class="job-section-hint">Folder or track, never library-deleted, even with No delete off. Adds/updates still run.</p>
+              <button type="button" class="btn btn-sm btn-browse-keep">${escapeAttr(excludeOpenLabel("dest", (job.excludeDest || []).length))}</button>
+            </div>
           </div>
         </div>
       </div>
@@ -339,10 +485,25 @@ function renderJobs() {
     const destEl = card.querySelector(".job-dest");
     const badge = card.querySelector(".job-badge");
     const badgeText = card.querySelector(".badge-text");
+    const collapsedSummary = card.querySelector(".job-collapsed-summary");
+    const skipBtn = card.querySelector(".btn-browse-skip");
+    const keepBtn = card.querySelector(".btn-browse-keep");
 
     function syncDestDisplay() {
       destEl.textContent = jobDest(job) || "—";
+      const sum = jobCollapsedSummary(job);
+      collapsedSummary.textContent = sum;
+      collapsedSummary.title = sum;
     }
+
+    skipBtn.disabled = running;
+    keepBtn.disabled = running;
+    skipBtn.addEventListener("click", () => {
+      openFolderSheet(job, "source");
+    });
+    keepBtn.addEventListener("click", () => {
+      openFolderSheet(job, "dest");
+    });
 
     card.querySelector(".job-collapse").addEventListener("click", () => {
       job.collapsed = !job.collapsed;
@@ -359,7 +520,7 @@ function renderJobs() {
       saveState(state);
     });
     label.addEventListener("change", () => {
-      job.label = label.value.trim() || job.category || "Job";
+      job.label = label.value.trim();
       saveState(state);
     });
     source.addEventListener("change", () => {
@@ -386,17 +547,13 @@ function renderJobs() {
     });
     category.addEventListener("change", async () => {
       job.category = category.value;
-      if (!job.label || categories.includes(job.label) || FALLBACK_CATEGORIES.includes(job.label)) {
-        job.label = job.category;
-        label.value = job.label;
-      }
       saveState(state);
       syncDestDisplay();
       await refreshBadge(job, badge, badgeText);
     });
 
     card.querySelector(".btn-browse-source").addEventListener("click", async () => {
-      const p = await api.invoke("pick_directory", { title: `Source for ${job.label}` });
+      const p = await api.invoke("pick_directory", { title: `Source for ${jobTitle(job)}` });
       if (p) {
         job.source = p;
         source.value = p;
@@ -406,7 +563,7 @@ function renderJobs() {
     card.querySelector(".btn-browse-volume").addEventListener("click", async () => {
       // Opens under /Volumes; always normalizes to card root (not Music/)
       const p = await api.invoke("pick_volume", {
-        title: `Select card volume for ${job.label} (root of the SD card)`,
+        title: `Select card volume for ${jobTitle(job)} (root of the SD card)`,
       });
       if (p) {
         job.volumeRoot = p;
@@ -541,7 +698,7 @@ async function ensureVolumesForJobs(jobs) {
     const p = await probeJob(job);
     if (isVolumeMissing(p)) {
       appendLog(
-        `${job.label}: ${p.message || "volume not found"} — plug in the card or fix Volume path`,
+        `${jobTitle(job)}: ${p.message || "volume not found"} — plug in the card or fix Volume path`,
         "err",
       );
       return false;
@@ -557,24 +714,353 @@ function escapeAttr(s) {
     .replace(/</g, "&lt;");
 }
 
-function validateJob(job) {
-  if (!job.source) return `${job.label}: missing source`;
-  if (!job.volumeRoot) return `${job.label}: missing volume`;
-  if (!job.category) return `${job.label}: missing category`;
-  if (!categories.includes(job.category)) {
-    return `${job.label}: category "${job.category}" not allowlisted (reload categories?)`;
+/** @type {{ jobId: string, side: string, rootAbs: string, rel: string, renderId: number } | null} */
+let folderSheet = null;
+let sheetSelectedHeight = 240;
+let sheetRenderSeq = 0;
+
+function refreshExcludeCounts() {
+  saveState(state);
+  if (!jobsEl) return;
+  for (const card of jobsEl.querySelectorAll(".job")) {
+    const job = state.jobs.find((j) => j.id === card.dataset.id);
+    if (!job) continue;
+    const skipBtn = card.querySelector(".btn-browse-skip");
+    const keepBtn = card.querySelector(".btn-browse-keep");
+    if (skipBtn) skipBtn.textContent = excludeOpenLabel("source", (job.excludeSource || []).length);
+    if (keepBtn) keepBtn.textContent = excludeOpenLabel("dest", (job.excludeDest || []).length);
+    const summary = card.querySelector(".job-collapsed-summary");
+    if (summary) {
+      const sum = jobCollapsedSummary(job);
+      summary.textContent = sum;
+      summary.title = sum;
+    }
   }
-  if (!jobDest(job)) return `${job.label}: could not build dest`;
+}
+
+function closeFolderSheet() {
+  folderSheet = null;
+  const el = $("folder-sheet");
+  if (el) el.hidden = true;
+  refreshExcludeCounts();
+}
+
+async function openFolderSheet(job, side) {
+  if (running) return;
+  const rootAbs = side === "source" ? job.source : jobDest(job);
+  if (!rootAbs) {
+    appendLog(
+      side === "source"
+        ? `${jobTitle(job)}: set a source first.`
+        : `${jobTitle(job)}: set volume and category first.`,
+      "warn",
+    );
+    return;
+  }
+  try {
+    const exists = await api.invoke("path_exists", { path: rootAbs });
+    if (!exists) {
+      appendLog(
+        side === "source"
+          ? `${jobTitle(job)}: source folder not found.`
+          : `${jobTitle(job)}: category folder is not on the card yet — sync once, then Keep.`,
+        "warn",
+      );
+      return;
+    }
+  } catch (e) {
+    appendLog(`Could not check folder: ${e}`, "err");
+    return;
+  }
+
+  folderSheet = { jobId: job.id, side, rootAbs, rel: "", renderId: 0 };
+  $("folder-sheet-title").textContent = side === "source" ? "Skip from source" : "Keep on dest";
+  $("folder-sheet").hidden = false;
+  await renderFolderSheet();
+}
+
+function currentSheetAbs() {
+  if (!folderSheet) return "";
+  return folderSheet.rel ? `${folderSheet.rootAbs}/${folderSheet.rel}` : folderSheet.rootAbs;
+}
+
+async function renderFolderSheet() {
+  if (!folderSheet) return;
+  const renderId = ++sheetRenderSeq;
+  folderSheet.renderId = renderId;
+  const listingRel = folderSheet.rel;
+  const listingJobId = folderSheet.jobId;
+  const listingAbs = currentSheetAbs();
+  const job = state.jobs.find((j) => j.id === listingJobId);
+  if (!job) {
+    closeFolderSheet();
+    return;
+  }
+  const list = job[excludeKey(folderSheet.side)] || [];
+  const selectedEl = $("folder-sheet-selected");
+  const splitHandle = $("folder-sheet-split");
+  const crumb = $("folder-sheet-crumb");
+  const listEl = $("folder-sheet-list");
+  const currentEl = $("folder-sheet-current");
+  const toggleBtn = $("folder-sheet-toggle");
+
+  selectedEl.replaceChildren();
+  if (list.length === 0) {
+    selectedEl.hidden = true;
+    splitHandle.hidden = true;
+  } else {
+    selectedEl.hidden = false;
+    splitHandle.hidden = false;
+    selectedEl.style.height = `${sheetSelectedHeight}px`;
+    const heading = document.createElement("div");
+    heading.className = "sheet-selected-head";
+    const headingLabel = document.createElement("div");
+    headingLabel.className = "sheet-selected-label";
+    headingLabel.textContent =
+      folderSheet.side === "source" ? `Skipped · ${list.length}` : `Keeping · ${list.length}`;
+    const clearAll = document.createElement("button");
+    clearAll.type = "button";
+    clearAll.className = "btn btn-sm btn-ghost";
+    clearAll.textContent = "Clear all";
+    clearAll.addEventListener("click", () => {
+      if (running || !folderSheet) return;
+      job[excludeKey(folderSheet.side)] = [];
+      saveState(state);
+      renderFolderSheet();
+    });
+    heading.appendChild(headingLabel);
+    heading.appendChild(clearAll);
+    selectedEl.appendChild(heading);
+    for (const rel of list) {
+      const row = document.createElement("div");
+      row.className = "exclude-row";
+      const pathEl = document.createElement("span");
+      pathEl.className = "exclude-row-path";
+      pathEl.textContent = rel;
+      const act = document.createElement("button");
+      act.type = "button";
+      act.className = "btn btn-sm btn-secondary";
+      act.textContent = excludeUndoLabel(folderSheet.side);
+      act.addEventListener("click", () => {
+        toggleExclude(job, folderSheet.side, rel);
+        saveState(state);
+        renderFolderSheet();
+      });
+      row.appendChild(pathEl);
+      row.appendChild(act);
+      selectedEl.appendChild(row);
+    }
+  }
+
+  crumb.replaceChildren();
+  const parts = folderSheet.rel ? folderSheet.rel.split("/") : [];
+  const rootBtn = document.createElement("button");
+  rootBtn.type = "button";
+  rootBtn.className = "sheet-crumb-btn";
+  rootBtn.textContent = folderSheet.side === "source" ? "Source" : "Card";
+  rootBtn.addEventListener("click", () => {
+    folderSheet.rel = "";
+    renderFolderSheet();
+  });
+  crumb.appendChild(rootBtn);
+  parts.forEach((part, i) => {
+    crumb.appendChild(document.createTextNode(" / "));
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sheet-crumb-btn";
+    btn.textContent = part;
+    btn.addEventListener("click", () => {
+      folderSheet.rel = parts.slice(0, i + 1).join("/");
+      renderFolderSheet();
+    });
+    crumb.appendChild(btn);
+  });
+
+  if (folderSheet.rel && !coveringExclude(folderSheet.rel, list)) {
+    currentEl.hidden = false;
+    toggleBtn.textContent =
+      folderSheet.side === "source" ? "Skip this folder" : "Keep this folder";
+  } else {
+    currentEl.hidden = true;
+  }
+
+  listEl.replaceChildren();
+  const loading = document.createElement("p");
+  loading.className = "sheet-loading";
+  loading.textContent = "Loading…";
+  listEl.appendChild(loading);
+
+  try {
+    const result = await api.invoke("list_subdirs", { root: listingAbs });
+    if (!folderSheet || folderSheet.renderId !== renderId || folderSheet.jobId !== listingJobId) {
+      return;
+    }
+    const dirs = result?.dirs || [];
+    const files = result?.files || [];
+    listEl.replaceChildren();
+    if (dirs.length === 0 && files.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "sheet-empty";
+      empty.textContent = "No folders or files";
+      listEl.appendChild(empty);
+      return;
+    }
+
+    function appendRow(name, isDir) {
+      const childRel = listingRel ? `${listingRel}/${name}` : name;
+      const cover = coveringExclude(childRel, list);
+      const row = document.createElement("div");
+      row.className =
+        "sheet-row" +
+        (cover ? " is-selected" : "") +
+        (isDir ? "" : " is-file");
+      const nameEl = document.createElement(isDir ? "button" : "span");
+      nameEl.className = "sheet-row-name";
+      nameEl.textContent = name;
+      if (isDir) {
+        nameEl.type = "button";
+        nameEl.addEventListener("click", () => {
+          if (!folderSheet) return;
+          folderSheet.rel = childRel;
+          renderFolderSheet();
+        });
+      }
+      row.appendChild(nameEl);
+      if (cover) {
+        const status = document.createElement("span");
+        status.className = "sheet-row-status";
+        const viaParent = cover !== childRel;
+        if (folderSheet.side === "source") {
+          status.textContent = viaParent ? `Skipped via ${cover}` : "Skipped";
+        } else {
+          status.textContent = viaParent ? `Keeping via ${cover}` : "Keeping";
+        }
+        row.appendChild(status);
+      } else {
+        const act = document.createElement("button");
+        act.type = "button";
+        act.className = "btn btn-sm btn-primary";
+        act.textContent = excludeActionLabel(folderSheet.side, false);
+        act.addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleExclude(job, folderSheet.side, childRel);
+          saveState(state);
+          renderFolderSheet();
+        });
+        row.appendChild(act);
+      }
+      listEl.appendChild(row);
+    }
+
+    for (const name of dirs) appendRow(name, true);
+    for (const name of files) appendRow(name, false);
+  } catch (e) {
+    if (!folderSheet || folderSheet.renderId !== renderId) return;
+    listEl.replaceChildren();
+    const err = document.createElement("p");
+    err.className = "sheet-empty";
+    err.textContent = String(e);
+    listEl.appendChild(err);
+  }
+}
+
+async function pickExcludeInFinder() {
+  if (!folderSheet || running) return;
+  const jobId = folderSheet.jobId;
+  const side = folderSheet.side;
+  const rootAbs = folderSheet.rootAbs;
+  const job = state.jobs.find((j) => j.id === jobId);
+  if (!job) return;
+  const p = await api.invoke("pick_directory", {
+    title: side === "source" ? "Skip folder" : "Keep folder",
+    directory: currentSheetAbs(),
+  });
+  if (!p) return;
+  if (!folderSheet || folderSheet.jobId !== jobId || folderSheet.side !== side) return;
+  const rel = relUnderRoot(rootAbs, p);
+  if (!rel) {
+    appendLog("Pick a folder inside the job root (not the root itself).", "warn");
+    return;
+  }
+  addExclude(job, side, rel);
+  saveState(state);
+  await renderFolderSheet();
+}
+
+function wireFolderSheet() {
+  const sheet = $("folder-sheet");
+  if (!sheet) return;
+  sheet.querySelectorAll("[data-sheet-close]").forEach((el) => {
+    el.addEventListener("click", () => closeFolderSheet());
+  });
+  $("folder-sheet-done").addEventListener("click", () => closeFolderSheet());
+  $("folder-sheet-finder").addEventListener("click", () => {
+    pickExcludeInFinder().catch((e) => appendLog(String(e), "err"));
+  });
+  $("folder-sheet-toggle").addEventListener("click", () => {
+    if (!folderSheet?.rel) return;
+    const job = state.jobs.find((j) => j.id === folderSheet.jobId);
+    if (!job) return;
+    toggleExclude(job, folderSheet.side, folderSheet.rel);
+    saveState(state);
+    renderFolderSheet();
+  });
+  const handle = $("folder-sheet-split");
+  const selectedEl = $("folder-sheet-selected");
+  let splitDragging = false;
+  let splitStartY = 0;
+  let splitStartH = 0;
+  handle.addEventListener("pointerdown", (e) => {
+    if (selectedEl.hidden) return;
+    splitDragging = true;
+    splitStartY = e.clientY;
+    splitStartH = selectedEl.getBoundingClientRect().height;
+    handle.classList.add("is-dragging");
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!splitDragging) return;
+    const split = handle.parentElement;
+    const minH = 88;
+    const maxH = Math.max(minH, (split?.clientHeight || 400) - 150);
+    const h = Math.max(minH, Math.min(maxH, splitStartH + (e.clientY - splitStartY)));
+    sheetSelectedHeight = h;
+    selectedEl.style.height = `${h}px`;
+  });
+  const endSplitDrag = () => {
+    splitDragging = false;
+    handle.classList.remove("is-dragging");
+  };
+  handle.addEventListener("pointerup", endSplitDrag);
+  handle.addEventListener("pointercancel", endSplitDrag);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && folderSheet) {
+      closeFolderSheet();
+    }
+  });
+}
+
+function validateJob(job) {
+  if (!job.source) return `${jobTitle(job)}: missing source`;
+  if (!job.volumeRoot) return `${jobTitle(job)}: missing volume`;
+  if (!job.category) return `${jobTitle(job)}: missing category`;
+  if (!categories.includes(job.category)) {
+    return `${jobTitle(job)}: category "${job.category}" not allowlisted (reload categories?)`;
+  }
+  if (!jobDest(job)) return `${jobTitle(job)}: could not build dest`;
   return null;
 }
 
 /**
- * Snapshot for a run: freeze dest path at start.
+ * Snapshot for a run: freeze dest path and exclude lists at start.
  */
 function snapshotJob(job) {
   return {
     ...job,
     dest: jobDest(job),
+    excludeSource: [...(job.excludeSource || [])],
+    excludeDest: [...(job.excludeDest || [])],
   };
 }
 
@@ -614,8 +1100,18 @@ async function withLineListener(prefix, fn) {
 function formatEvent(ev, prefix) {
   const p = prefix ? `[${prefix}] ` : "";
   switch (ev.type) {
-    case "start":
-      return `${p}→ ${ev.phase || "sync"}: ${ev.source || ""} → ${ev.dest || ""}`;
+    case "start": {
+      let line = `${p}→ ${ev.phase || "sync"}: ${ev.source || ""} → ${ev.dest || ""}`;
+      const skipN = Array.isArray(ev.excludeSource) ? ev.excludeSource.length : 0;
+      const keepN = Array.isArray(ev.excludeDest) ? ev.excludeDest.length : 0;
+      if (skipN || keepN) {
+        const bits = [];
+        if (skipN) bits.push(`skip ${skipN}`);
+        if (keepN) bits.push(`keep ${keepN}`);
+        line += ` (${bits.join(", ")})`;
+      }
+      return line;
+    }
     case "scan": {
       const side = ev.side === "source" ? "source library" : "dest category";
       const empty =
@@ -706,7 +1202,7 @@ async function dryRunSelected() {
           aborted = true;
           break;
         }
-        appendSection(`Dry run · ${job.label}`);
+        appendSection(`Dry run · ${jobTitle(job)}`);
         const args = [
           "plan",
           "-s",
@@ -714,16 +1210,17 @@ async function dryRunSelected() {
           "-d",
           job.dest,
           ...commonFlags(),
+          ...jobExcludeFlags(job),
         ];
         const result = await runCli(args);
         if (shouldAbortBatch(result)) {
           aborted = true;
-          appendLog(`[${job.label}] cancelled — aborting batch`, "warn");
+          appendLog(`[${jobTitle(job)}] cancelled — aborting batch`, "warn");
           break;
         }
         if (result.code !== 0) {
           batchFailed = true;
-          appendLog(`[${job.label}] plan exited ${result.code}`, "err");
+          appendLog(`[${jobTitle(job)}] plan exited ${result.code}`, "err");
         } else {
           completed += 1;
         }
@@ -775,9 +1272,9 @@ async function syncSelected() {
           aborted = true;
           break;
         }
-        appendSection(`Sync · ${job.label}`);
+        appendSection(`Sync · ${jobTitle(job)}`);
 
-        const planPath = await api.invoke("temp_plan_path", { label: job.label });
+        const planPath = await api.invoke("temp_plan_path", { label: jobTitle(job) });
         try {
           const planArgs = [
             "plan",
@@ -788,17 +1285,18 @@ async function syncSelected() {
             "-o",
             planPath,
             ...commonFlags(),
+            ...jobExcludeFlags(job),
           ];
           const planResult = await runCli(planArgs);
           if (shouldAbortBatch(planResult)) {
             aborted = true;
-            appendLog(`[${job.label}] cancelled during plan — aborting batch`, "warn");
+            appendLog(`[${jobTitle(job)}] cancelled during plan — aborting batch`, "warn");
             break;
           }
           if (planResult.code !== 0) {
             failed = true;
             appendLog(
-              `[${job.label}] plan failed (exit ${planResult.code}) — skipping apply`,
+              `[${jobTitle(job)}] plan failed (exit ${planResult.code}) — skipping apply`,
               "err",
             );
             continue;
@@ -809,7 +1307,7 @@ async function syncSelected() {
             try {
               delCount = await api.invoke("plan_delete_count", { planPath });
             } catch (e) {
-              appendLog(`[${job.label}] could not read plan: ${e}`, "err");
+              appendLog(`[${jobTitle(job)}] could not read plan: ${e}`, "err");
               failed = true;
               continue;
             }
@@ -821,12 +1319,12 @@ async function syncSelected() {
               const ok = await api.invoke("confirm_dialog", {
                 title: "Confirm deletions",
                 message:
-                  `Job “${job.label}” will delete ${delCount} item(s) under:\n\n` +
+                  `Job “${jobTitle(job)}” will delete ${delCount} item(s) under:\n\n` +
                   `${job.dest}\n\n` +
                   `Cancel aborts this and all remaining jobs.`,
               });
               if (!ok) {
-                appendLog(`[${job.label}] user cancelled — aborting batch`, "warn");
+                appendLog(`[${jobTitle(job)}] user cancelled — aborting batch`, "warn");
                 aborted = true;
                 cancelRequested = true;
                 break;
@@ -839,12 +1337,12 @@ async function syncSelected() {
           const applyResult = await runCli(applyArgs);
           if (shouldAbortBatch(applyResult)) {
             aborted = true;
-            appendLog(`[${job.label}] cancelled during apply — aborting batch`, "warn");
+            appendLog(`[${jobTitle(job)}] cancelled during apply — aborting batch`, "warn");
             break;
           }
           if (applyResult.code !== 0) {
             failed = true;
-            appendLog(`[${job.label}] apply exited ${applyResult.code}`, "err");
+            appendLog(`[${jobTitle(job)}] apply exited ${applyResult.code}`, "err");
           } else {
             completed += 1;
           }
@@ -877,6 +1375,7 @@ async function init() {
   logEl = $("log");
   summaryEl = $("summary");
   jobsEl = $("jobs");
+  wireFolderSheet();
 
   $("opt-no-delete").checked = state.noDelete;
   $("opt-checksum").checked = state.checksum;
@@ -906,18 +1405,23 @@ async function init() {
   });
 
   $("btn-add-job").addEventListener("click", () => {
-    const category = categories[0] || "Music";
+    const category = firstUnusedCategory();
+    const id = uid();
     state.jobs.push({
-      id: uid(),
-      label: category,
+      id,
+      label: "",
       enabled: true,
       collapsed: false,
       source: "",
       volumeRoot: DEFAULT_VOLUME,
       category,
+      excludeSource: [],
+      excludeDest: [],
     });
     saveState(state);
     renderJobs();
+    const input = jobsEl.querySelector(`.job[data-id="${id}"] .job-label`);
+    if (input) input.focus();
   });
 
   $("btn-expand-jobs").addEventListener("click", () => {

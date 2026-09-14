@@ -182,4 +182,50 @@ describe('CLI integration', () => {
     assert.ok(list.includes('Music'));
     assert.ok(list.includes('Books'));
   });
+
+  it('--exclude-source / --exclude-dest round-trip into plan options', async () => {
+    const vol = await makeFakeVolume({ withMusic: true });
+    const src = await makeTempRoot();
+    const tmp = await makeTempRoot();
+    cleanups.push(vol, src, tmp);
+    await writeTree(src, {
+      'Tool/Lateralus/t.flac': 'x',
+      'Nirvana/Nevermind/t.flac': 'y',
+    });
+    const dest = path.join(vol, 'Music');
+    const planFile = path.join(tmp, 'p.json');
+    const r = await runBin([
+      'plan', '-s', src, '-d', dest, '-o', planFile,
+      '--exclude-source', 'Tool/Lateralus',
+      '--exclude-dest', 'Playlists',
+      '--json-lines',
+    ]);
+    assert.equal(r.code, EXIT_OK, r.stderr);
+    const plan = JSON.parse(await fs.promises.readFile(planFile, 'utf8'));
+    assert.deepEqual(plan.options.excludeSource, ['Tool/Lateralus']);
+    assert.deepEqual(plan.options.excludeDest, ['Playlists']);
+    assert.ok(plan.actions.every((a) => !String(a.path).startsWith('Tool/Lateralus')));
+    const start = r.stdout.trim().split('\n').map((l) => JSON.parse(l)).find((e) => e.type === 'start');
+    assert.ok(start);
+    assert.deepEqual(start.excludeSource, ['Tool/Lateralus']);
+  });
+
+  it('invalid --exclude-source is usage error', async () => {
+    const r = await runBin(['plan', '-s', '/tmp', '-d', '/tmp/Music', '--exclude-source', '..']);
+    assert.equal(r.code, EXIT_USAGE, r.stderr + r.stdout);
+  });
+
+  it('list-dirs --json lists immediate child dirs', async () => {
+    const src = await makeTempRoot();
+    cleanups.push(src);
+    await writeTree(src, {
+      'Tool/a.flac': 'x',
+      'Nirvana/b.flac': 'y',
+    });
+    const r = await runBin(['list-dirs', '--root', src, '--json']);
+    assert.equal(r.code, EXIT_OK, r.stderr);
+    const payload = JSON.parse(r.stdout.trim());
+    assert.deepEqual(payload.dirs, ['Nirvana', 'Tool']);
+    assert.ok(Array.isArray(payload.files));
+  });
 });

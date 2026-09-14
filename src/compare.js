@@ -6,6 +6,8 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { isMacOsMetadataPath } from './walk.js';
+import { isDestDeleteProtected } from './exclude.js';
 
 export const DEFAULT_MTIME_TOLERANCE_MS = 3000;
 
@@ -46,13 +48,15 @@ export const DEFAULT_MTIME_TOLERANCE_MS = 3000;
  *   contentTransformFor?: (sourceRel: string) => string|null|undefined,
  *   usesMtimeOnlyCompare?: (sourceRel: string) => boolean,
  *   destStillNeedsTransform?: (sourceRel: string, destAbs: string) => boolean|Promise<boolean>,
- *   onCollision?: (dest: string, sources: string[]) => void
+ *   onCollision?: (dest: string, sources: string[]) => void,
+ *   excludeDest?: string[]
  * }} options
  */
 export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs, options = {}) {
   const mtimeTol = options.mtimeToleranceMs ?? DEFAULT_MTIME_TOLERANCE_MS;
   const noDelete = Boolean(options.noDelete);
   const useChecksum = Boolean(options.checksum);
+  const excludeDest = Array.isArray(options.excludeDest) ? options.excludeDest : [];
   const hashAlgo = options.hashAlgo || 'sha256';
   const mapDest = options.mapDestPath || ((rel) => rel);
   const contentTransformFor = options.contentTransformFor || (() => null);
@@ -234,26 +238,28 @@ export async function buildActions(sourceFiles, destFiles, sourceDirs, destDirs,
   if (!noDelete) {
     // Delete dest files not owned by any mapped source path
     for (const [rel] of destFiles) {
-      if (!destToSource.has(rel)) {
-        actions.push({
-          type: 'delete',
-          path: rel,
-          kind: 'file',
-          reason: 'dest-only',
-        });
-      }
+      if (destToSource.has(rel)) continue;
+      const junk = isMacOsMetadataPath(rel);
+      if (!junk && isDestDeleteProtected(rel, excludeDest)) continue;
+      actions.push({
+        type: 'delete',
+        path: rel,
+        kind: 'file',
+        reason: 'dest-only',
+      });
     }
 
     // Delete dest dirs not owned by mapped source dirs (deepest first — apply sorts)
     for (const [rel] of destDirs) {
-      if (!ownedDestDirs.has(rel)) {
-        actions.push({
-          type: 'delete',
-          path: rel,
-          kind: 'dir',
-          reason: 'dest-only',
-        });
-      }
+      if (ownedDestDirs.has(rel)) continue;
+      const junk = isMacOsMetadataPath(rel);
+      if (!junk && isDestDeleteProtected(rel, excludeDest)) continue;
+      actions.push({
+        type: 'delete',
+        path: rel,
+        kind: 'dir',
+        reason: 'dest-only',
+      });
     }
   }
 

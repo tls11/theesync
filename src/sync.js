@@ -13,6 +13,7 @@ import {
   resolveAbs,
 } from './safety.js';
 import { walkTree, isMacOsMetadataPath } from './walk.js';
+import { normalizeExcludeList } from './exclude.js';
 import {
   buildActions,
   compareActionsForApply,
@@ -43,6 +44,8 @@ import {
  *   mtimeToleranceMs?: number,
  *   requireRockbox?: boolean,
  *   thoroughCovers?: boolean,
+ *   excludeSource?: string[],
+ *   excludeDest?: string[],
  *   writePlan?: string,
  *   jsonLines?: boolean,
  *   verbose?: boolean,
@@ -67,6 +70,9 @@ export async function planJob(options) {
     requireRockbox: options.requireRockbox,
   });
 
+  const excludeSource = normalizeExcludeList(options.excludeSource);
+  const excludeDest = normalizeExcludeList(options.excludeDest);
+
   for (const w of paths.warnings) {
     emit.emit('warning', { message: w });
   }
@@ -77,6 +83,8 @@ export async function planJob(options) {
     dest: paths.dest,
     category: paths.category,
     volumeRoot: paths.volumeRoot,
+    excludeSource,
+    excludeDest,
   });
 
   // Dest may not exist yet — treat as empty
@@ -101,9 +109,9 @@ export async function planJob(options) {
     destWarnings = destWalk.warnings;
   }
 
-  // Source: never copy hidden macOS metadata
   const srcWalk = await walkTree(paths.source, {
     includeHidden: false,
+    excludePrefixes: excludeSource,
     onSkip: (rel, reason) => {
       if (options.verbose) emit.emit('action', { op: 'skip', path: rel, reason: `source-${reason}` });
     },
@@ -154,6 +162,7 @@ export async function planJob(options) {
       noDelete: options.noDelete,
       checksum: options.checksum,
       mtimeToleranceMs,
+      excludeDest,
       mapDestPath: transforms.mapDestPath,
       contentTransformFor: transforms.contentTransformFor,
       usesMtimeOnlyCompare: transforms.usesMtimeOnlyCompare,
@@ -233,6 +242,8 @@ export async function planJob(options) {
       checksum: options.checksum,
       mtimeToleranceMs,
       thoroughCovers,
+      excludeSource,
+      excludeDest,
     },
     actions,
     skippedUnchanged,
