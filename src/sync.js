@@ -99,6 +99,8 @@ export async function planJob(options) {
     // Those deletes are counted separately (deleteJunk) and only logged when verbose.
     const destWalk = await walkTree(paths.dest, {
       includeHidden: true,
+      // See logs on the card so a leftover *.log is still removed as dest-only.
+      skipLogs: false,
       onSkip: (rel, reason) => {
         if (options.verbose) emit.emit('action', { op: 'skip', path: rel, reason: `dest-${reason}` });
       },

@@ -164,6 +164,27 @@ describe('sync plan/apply', () => {
     assert.equal(await exists(path.join(dest, 'orphan.flac')), true);
   });
 
+  it('does not copy .log files; a log already on the card is deleted', async () => {
+    await writeTree(src, {
+      'Tool/Lateralus (2001)/eac.log': 'log',
+      'Tool/Lateralus (2001)/EAC.LOG': 'log',
+      'Tool/session.log/notes.txt': 'inside',
+    });
+    await fs.promises.writeFile(path.join(dest, 'old.log'), 'old');
+
+    const { plan } = await planJob({ source: src, dest, emit: quietEmit() });
+    assert.ok(plan.actions.some((a) => a.type === 'add' && a.path.endsWith('.flac')));
+    assert.ok(!plan.actions.some((a) => /\.log$/i.test(a.path) && a.type !== 'delete'));
+    assert.ok(plan.actions.some((a) => a.type === 'delete' && a.path === 'old.log'));
+
+    await applyPlan(plan, { emit: quietEmit() });
+    assert.equal(await exists(path.join(dest, 'Tool/Lateralus (2001)/01 - Schism.flac')), true);
+    assert.equal(await exists(path.join(dest, 'Tool/Lateralus (2001)/eac.log')), false);
+    assert.equal(await exists(path.join(dest, 'Tool/Lateralus (2001)/EAC.LOG')), false);
+    assert.equal(await exists(path.join(dest, 'Tool/session.log/notes.txt')), false);
+    assert.equal(await exists(path.join(dest, 'old.log')), false);
+  });
+
   it('dry-run does not write', async () => {
     const before = await listRelFiles(vol);
     await syncJob({ source: src, dest, dryRun: true, emit: quietEmit() });

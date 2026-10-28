@@ -1,6 +1,7 @@
 /**
  * Directory walk with macOS metadata skip list.
  * Conservative: skip all hidden (dot) names at any depth when walking source.
+ * Also skip *.log names (any case): they are not library files.
  */
 
 import fs from 'node:fs';
@@ -17,6 +18,15 @@ export function shouldSkipName(name) {
   if (name == null || name === '') return true;
   if (name.startsWith('.')) return true;
   return false;
+}
+
+/**
+ * True for a file or folder whose extension is .log (any case).
+ * `path.extname('.log')` is empty, and that name is already a hidden skip.
+ */
+export function isLogName(name) {
+  if (name == null || name === '') return false;
+  return path.extname(String(name)).toLowerCase() === '.log';
 }
 
 /**
@@ -40,18 +50,22 @@ export function isMacOsMetadataPath(relPath) {
  * @param {{
  *   includeDirs?: boolean,
  *   includeHidden?: boolean,
+ *   skipLogs?: boolean,
  *   excludePrefixes?: string[],
  *   onSkip?: (rel: string, reason: string) => void,
  *   onWarning?: (msg: string) => void
  * }} options
  *   includeHidden: when false (default), skip all dot-names (macOS ._* / .DS_Store).
  *   Used for both source and dest so FAT32 AppleDouble sidecars are not treated as library files.
+ *   skipLogs: when true (default), skip *.log files and folders and do not descend.
+ *   Dest inventory passes false so a log already on the card is still a dest-only delete.
  *   excludePrefixes: skip these relative folders and everything under them (source skip).
  * @returns {Promise<{ files: Map<string, WalkEntry>, dirs: Map<string, WalkEntry>, skipped: number, warnings: string[] }>}
  */
 export async function walkTree(rootAbs, options = {}) {
   const includeDirs = options.includeDirs !== false;
   const includeHidden = Boolean(options.includeHidden);
+  const skipLogs = options.skipLogs !== false;
   const excludePrefixes = Array.isArray(options.excludePrefixes) ? options.excludePrefixes : [];
   const files = new Map();
   const dirs = new Map();
@@ -77,6 +91,12 @@ export async function walkTree(rootAbs, options = {}) {
       if (!includeHidden && shouldSkipName(name)) {
         skipped += 1;
         options.onSkip?.(relKey, 'hidden');
+        continue;
+      }
+
+      if (skipLogs && isLogName(name)) {
+        skipped += 1;
+        options.onSkip?.(relKey, 'log');
         continue;
       }
 
@@ -145,6 +165,7 @@ export async function walkTree(rootAbs, options = {}) {
 export function walkTreeSync(rootAbs, options = {}) {
   const includeDirs = options.includeDirs !== false;
   const includeHidden = Boolean(options.includeHidden);
+  const skipLogs = options.skipLogs !== false;
   const excludePrefixes = Array.isArray(options.excludePrefixes) ? options.excludePrefixes : [];
   const files = new Map();
   const dirs = new Map();
@@ -168,6 +189,12 @@ export function walkTreeSync(rootAbs, options = {}) {
       if (!includeHidden && shouldSkipName(name)) {
         skipped += 1;
         options.onSkip?.(relKey, 'hidden');
+        continue;
+      }
+
+      if (skipLogs && isLogName(name)) {
+        skipped += 1;
+        options.onSkip?.(relKey, 'log');
         continue;
       }
 
@@ -246,7 +273,7 @@ export async function listImmediateEntries(rootAbs) {
   const dirs = [];
   const files = [];
   for (const ent of entries) {
-    if (shouldSkipName(ent.name)) continue;
+    if (shouldSkipName(ent.name) || isLogName(ent.name)) continue;
     const childAbs = path.join(abs, ent.name);
     let st;
     try {

@@ -239,6 +239,7 @@ On FAT32, macOS often creates AppleDouble **`._*`** next to files and **`.DS_Sto
 - **Plan:** read-only; **apply:** no full re-scan; safety on every op  
 - **Copy:** non-dot temp beside target → rename; preserve mtime  
 - **Paths:** exact string match (no Unicode NFC); soft warn on non-ASCII  
+- **Logs:** `*.log` (any case), file or folder, is never copied. A `.log` already inside the category is dest-only and removed on sync.  
 
 ### Skip / keep (folders or tracks)
 

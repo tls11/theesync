@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { walkTree, walkTreeSync, shouldSkipName, listImmediateDirs, listImmediateEntries } from '../src/walk.js';
+import { walkTree, walkTreeSync, shouldSkipName, isLogName, listImmediateDirs, listImmediateEntries } from '../src/walk.js';
 import { makeTempRoot, writeTree, rmrf } from './helpers.js';
 
 describe('shouldSkipName', () => {
@@ -11,6 +11,17 @@ describe('shouldSkipName', () => {
     assert.equal(shouldSkipName('._foo'), true);
     assert.equal(shouldSkipName('.Trash'), true);
     assert.equal(shouldSkipName('track.flac'), false);
+  });
+});
+
+describe('isLogName', () => {
+  it('matches a .log extension in any case', () => {
+    assert.equal(isLogName('rip.log'), true);
+    assert.equal(isLogName('rip.LOG'), true);
+    assert.equal(isLogName('session.Log'), true);
+    assert.equal(isLogName('notes.log.txt'), false);
+    assert.equal(isLogName('track.flac'), false);
+    assert.equal(isLogName('.log'), false);
   });
 });
 
@@ -82,6 +93,37 @@ describe('walkTree', () => {
     assert.ok(dirs.has('Tool/Lateralus'));
     await rmrf(root);
   });
+
+  it('skips .log files and folders, and does not descend', async () => {
+    const root = await makeTempRoot();
+    await writeTree(root, {
+      'Tool/Lateralus/01 - Schism.flac': 'audio',
+      'Tool/Lateralus/eac.log': 'log',
+      'Tool/Lateralus/EAC.LOG': 'log',
+      'Tool/session.log/notes.txt': 'inside',
+    });
+    const skipped = [];
+    const { files, dirs } = await walkTree(root, {
+      onSkip: (rel, reason) => skipped.push({ rel, reason }),
+    });
+    assert.ok(files.has('Tool/Lateralus/01 - Schism.flac'));
+    assert.equal(files.has('Tool/Lateralus/eac.log'), false);
+    assert.equal(files.has('Tool/Lateralus/EAC.LOG'), false);
+    assert.equal(files.has('Tool/session.log/notes.txt'), false);
+    assert.equal(dirs.has('Tool/session.log'), false);
+    assert.ok(skipped.some((s) => s.rel === 'Tool/Lateralus/eac.log' && s.reason === 'log'));
+    assert.ok(skipped.some((s) => s.rel === 'Tool/session.log' && s.reason === 'log'));
+
+    const sync = walkTreeSync(root);
+    assert.equal(sync.files.has('Tool/Lateralus/eac.log'), false);
+    assert.equal(sync.files.has('Tool/session.log/notes.txt'), false);
+
+    const seen = await walkTree(root, { skipLogs: false });
+    assert.ok(seen.files.has('Tool/Lateralus/eac.log'));
+    assert.ok(seen.files.has('Tool/session.log/notes.txt'));
+
+    await rmrf(root);
+  });
 });
 
 describe('listImmediateDirs', () => {
@@ -98,6 +140,9 @@ describe('listImmediateDirs', () => {
     const entries = await listImmediateEntries(root);
     assert.deepEqual(entries.dirs, ['Nirvana', 'Tool']);
     assert.deepEqual(entries.files, ['track.flac']);
+    await fs.promises.writeFile(path.join(root, 'rip.log'), 'log');
+    const withoutLog = await listImmediateEntries(root);
+    assert.deepEqual(withoutLog.files, ['track.flac']);
     await rmrf(root);
   });
 });
