@@ -44,6 +44,12 @@ body {
   line-height: 1.45;
 }
 
+/* Keep the scrollbar gutter reserved so opening the log (or any panel that
+   grows the page) does not narrow the viewport and shift the layout. */
+html {
+  scrollbar-gutter: stable;
+}
+
 #app {
   max-width: 960px;
   margin: 0 auto;
