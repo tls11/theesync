@@ -278,7 +278,7 @@ Needs **Node ≥ 20** and the repo’s `bin/theesync.js`.
 - Per-job **Skip** / **Keep** (folder or track) — job card shows a count; the picker is where you add, unskip, and clear  
 - Per-job Rockbox badge on the volume  
 - Toggles: **No delete**, **Checksum**, **Require Rockbox markers**  
-- **Dry run selected** / **Sync selected** (batch; cancel aborts remaining jobs)  
+- **Dry Run** / **Sync** (batch; cancel aborts remaining jobs)  
 - Sync confirm only when **library** deletes &gt; 0  
 - Log: Copy, Clear, **Verbose**  
 
