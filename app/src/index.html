@@ -13,19 +13,12 @@
           <h1>theesync</h1>
           <p class="subtitle">One-way category sync for HiFi Walker H2 / Rockbox</p>
         </div>
-        <div class="header-meta">
-          <button type="button" id="btn-reload-categories" class="btn btn-secondary btn-sm" title="Re-read category allowlist from the engine">
-            Reload categories
-          </button>
-        </div>
       </header>
 
       <section class="panel">
         <div class="panel-head">
           <h2>Sync jobs</h2>
           <div class="panel-head-actions">
-            <button type="button" id="btn-expand-jobs" class="btn btn-secondary btn-sm" title="Expand all jobs">Expand all</button>
-            <button type="button" id="btn-collapse-jobs" class="btn btn-secondary btn-sm" title="Collapse all jobs">Collapse all</button>
             <button type="button" id="btn-add-job" class="btn btn-secondary btn-sm" title="Add a new sync job">+ Add job</button>
           </div>
         </div>
@@ -34,39 +27,58 @@
         <datalist id="volume-mounts"></datalist>
       </section>
 
-      <section class="panel toggles">
-        <label class="check" title="Skip removing files that exist on the card but not in your source library. Adds and updates still run.">
+      <section class="run-bar">
+        <label class="check" title="Skip removing files that are on the card but not in your library. Adds and updates still run.">
           <input type="checkbox" id="opt-no-delete" />
           <span>No delete</span>
+          <span class="no-delete-hint">extra files on the card stay</span>
         </label>
-        <label class="check" title="When size matches, compare file contents with a checksum (slower, catches same-size changes).">
-          <input type="checkbox" id="opt-checksum" />
-          <span>Checksum</span>
-        </label>
-        <label
-          class="check"
-          title="Books: re-inspect embedded art on unchanged audiobooks (slower). Adds/updates and sidecar image changes always process covers. Use after a big fix or if art looks wrong."
-        >
-          <input type="checkbox" id="opt-thorough-covers" />
-          <span>Thorough covers</span>
-        </label>
-        <label class="check" title="Fail if the card volume has no .rockbox folder or update.upt — avoids syncing to the wrong disk.">
-          <input type="checkbox" id="opt-require-rockbox" />
-          <span>Require Rockbox markers</span>
-        </label>
+        <div id="summary" class="summary" aria-live="polite"></div>
+        <div class="actions">
+          <button type="button" id="btn-dry-run" class="btn btn-secondary">Dry Run</button>
+          <button type="button" id="btn-sync" class="btn btn-primary">Sync</button>
+          <button type="button" id="btn-cancel" class="btn btn-danger" hidden disabled>Cancel</button>
+        </div>
       </section>
 
-      <section class="actions">
-        <button type="button" id="btn-dry-run" class="btn btn-secondary">
-          Dry Run
-        </button>
-        <button type="button" id="btn-sync" class="btn btn-primary">Sync</button>
-        <button type="button" id="btn-cancel" class="btn btn-danger" disabled>Cancel</button>
-      </section>
+      <details class="panel disclosure" id="options-panel">
+        <summary>Options</summary>
+        <div class="disclosure-body">
+          <label class="check check-block" title="When size matches, compare file contents with a checksum (slower, catches same-size changes).">
+            <input type="checkbox" id="opt-checksum" />
+            <span class="check-copy">
+              <span class="check-name">Checksum</span>
+              <span class="check-hint">When the size matches, compare file contents. Slower.</span>
+            </span>
+          </label>
+          <label
+            class="check check-block"
+            title="Books: re-inspect embedded art on unchanged audiobooks (slower). Adds/updates and sidecar image changes always process covers. Use after a big fix or if art looks wrong."
+          >
+            <input type="checkbox" id="opt-thorough-covers" />
+            <span class="check-copy">
+              <span class="check-name">Thorough covers</span>
+              <span class="check-hint">Re-check embedded art on audiobooks that otherwise look unchanged. Slower. Use this when cover art looks wrong.</span>
+            </span>
+          </label>
+          <label class="check check-block" title="Fail if the card volume has no .rockbox folder or update.upt — avoids syncing to the wrong disk.">
+            <input type="checkbox" id="opt-require-rockbox" />
+            <span class="check-copy">
+              <span class="check-name">Require Rockbox markers</span>
+              <span class="check-hint">Stop if the card has no .rockbox folder or update.upt, so a sync cannot hit the wrong disk.</span>
+            </span>
+          </label>
+          <div class="options-actions">
+            <button type="button" id="btn-reload-categories" class="btn btn-secondary btn-sm" title="Re-read the category allowlist from the engine">
+              Reload categories
+            </button>
+          </div>
+        </div>
+      </details>
 
-      <section class="panel log-panel">
-        <div class="panel-head">
-          <h2>Log</h2>
+      <details class="panel disclosure log-panel" id="log-panel">
+        <summary>Log</summary>
+        <div class="disclosure-body">
           <div class="panel-head-actions">
             <label class="check log-verbose-toggle" title="Show per-file actions and macOS metadata cleanup">
               <input type="checkbox" id="opt-verbose" />
@@ -75,33 +87,36 @@
             <button type="button" id="btn-copy-log" class="btn btn-ghost btn-sm">Copy</button>
             <button type="button" id="btn-clear-log" class="btn btn-ghost btn-sm">Clear</button>
           </div>
+          <pre id="log" class="log" aria-live="polite"></pre>
         </div>
-        <pre id="log" class="log" aria-live="polite"></pre>
-        <div id="summary" class="summary"></div>
-      </section>
+      </details>
     </div>
 
     <div id="folder-sheet" class="sheet" hidden>
       <div class="sheet-backdrop" data-sheet-close></div>
       <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="folder-sheet-title">
         <div class="sheet-head">
-          <h2 id="folder-sheet-title">Skip from source</h2>
-          <button type="button" class="btn btn-ghost btn-sm" data-sheet-close>Close</button>
+          <h2 id="folder-sheet-title">Exceptions</h2>
         </div>
+        <div class="sheet-tabs" role="tablist">
+          <button type="button" id="sheet-tab-source" class="sheet-tab is-active" role="tab" aria-selected="true">Don't copy</button>
+          <button type="button" id="sheet-tab-dest" class="sheet-tab" role="tab" aria-selected="false">Leave on card</button>
+        </div>
+        <p id="folder-sheet-explain" class="sheet-explain"></p>
         <div class="sheet-split">
           <div id="folder-sheet-selected" class="sheet-selected" hidden></div>
           <div id="folder-sheet-split" class="sheet-split-handle" hidden title="Drag to resize"></div>
           <div class="sheet-browse">
             <div id="folder-sheet-crumb" class="sheet-crumb"></div>
             <div id="folder-sheet-current" class="sheet-current" hidden>
-              <button type="button" id="folder-sheet-toggle" class="btn btn-sm btn-primary">Skip this folder</button>
+              <button type="button" id="folder-sheet-toggle" class="btn btn-sm btn-primary">Don't copy this folder</button>
             </div>
             <div id="folder-sheet-list" class="sheet-list"></div>
           </div>
         </div>
         <div class="sheet-foot">
           <button type="button" id="folder-sheet-finder" class="btn btn-ghost btn-sm">Choose in Finder…</button>
-          <button type="button" id="folder-sheet-done" class="btn btn-secondary">Done</button>
+          <button type="button" id="folder-sheet-done" class="btn btn-primary">Done</button>
         </div>
       </div>
     </div>

@@ -272,15 +272,16 @@ Needs **Node ≥ 20** and the repo’s `bin/theesync.js`.
 
 ### Behavior
 
-- **Jobs:** source + **volume** (card root) + **category** dropdown → **Writes to** = `volume/category`  
-- Categories loaded from the engine (`categories --json`); **Reload categories** after editing the allowlist  
-- Persist jobs/toggles in `localStorage`  
-- Per-job **Skip** / **Keep** (folder or track) — job card shows a count; the picker is where you add, unskip, and clear  
-- Per-job Rockbox badge on the volume  
-- Toggles: **No delete**, **Checksum**, **Require Rockbox markers**  
-- **Dry Run** / **Sync** (batch; cancel aborts remaining jobs)  
-- Sync confirm only when **library** deletes &gt; 0  
-- Log: Copy, Clear, **Verbose**  
+- **Jobs:** one line each — library folder → card / category. **Include** chooses which jobs run. Expand a job to set the library folder and the card.
+- **Card:** category picker, full path underneath, Rockbox status on that line (**Rockbox**, **Not mounted**, **No Rockbox markers**). **Change…** edits the volume path.
+- Categories loaded from the engine (`categories --json`). **Reload categories** is under **Options**.
+- Persist jobs/toggles in `localStorage`. A saved nickname that is not the category or folder name still shows on the row.
+- **Exceptions** (per job): **Don't copy** (not copied; a copy already on the card is removed unless you also leave it on the card or **No delete** is on) and **Leave on card** (never library-deleted; adds and updates still run). The button shows a count when either list has entries.
+- **No delete** sits with **Dry Run** and **Sync**.
+- **Options:** **Checksum**, **Thorough covers**, **Require Rockbox markers** (starts on; turning it off is remembered), **Reload categories**.
+- **Dry Run** / **Sync**. **Cancel** appears only while a batch is running.
+- After a run, add / update / delete counts sit next to **Sync**. The log stays closed until you open it or a run reports an error. Log: Copy, Clear, **Verbose**.
+- Sync confirm only when **library** deletes &gt; 0.
 
 ```text
 app/

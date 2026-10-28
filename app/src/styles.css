@@ -165,6 +165,7 @@ h2 {
 
 .job-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-bottom: 4px;
@@ -270,11 +271,10 @@ h2 {
   opacity: 0.9;
 }
 
-/* Extra gap after source so "Volume" is not read as source-volume */
 .job-section:first-of-type {
-  margin-bottom: 6px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 /* Group volume + category + writes-to as one unit */
@@ -339,7 +339,8 @@ h2 {
   font-size: 12px;
 }
 
-.row input[type="text"] {
+.row input[type="text"],
+.path-row input[type="text"] {
   width: 100%;
   background: var(--input);
   color: var(--text);
@@ -350,7 +351,8 @@ h2 {
   font-size: 12px;
 }
 
-.row input[type="text"]:focus {
+.row input[type="text"]:focus,
+.path-row input[type="text"]:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
   border-color: var(--accent);
 }
@@ -484,9 +486,7 @@ h2 {
 
 
 .log-panel {
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
+  min-height: 0;
 }
 
 .log-verbose-toggle {
@@ -530,7 +530,7 @@ h2 {
 }
 
 .summary {
-  margin-top: 10px;
+  margin: 0;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--muted);
@@ -810,4 +810,216 @@ h2 {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
+}
+
+.job-include {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.job-heading {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.job-custom {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.job-sentence {
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.job.is-off .job-heading,
+.job.is-off .job-body,
+.job.is-off .btn-exceptions {
+  opacity: 0.5;
+}
+
+.job-top .btn-exceptions {
+  flex-shrink: 0;
+}
+
+.path-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.dest-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.dest-volume-name {
+  font-weight: 650;
+}
+
+.dest-slash {
+  color: var(--muted);
+}
+
+.dest-line .job-category {
+  width: auto;
+  min-width: 7rem;
+  background: var(--input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-weight: 600;
+}
+
+.dest-line .job-category:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-color: var(--accent);
+}
+
+.dest-line .badge {
+  margin-top: 0;
+}
+
+.dest-path {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.volume-edit {
+  margin-top: 8px;
+}
+
+.volume-edit[hidden] {
+  display: none !important;
+}
+
+.run-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.run-bar .check {
+  flex-shrink: 0;
+}
+
+.run-bar .summary {
+  flex: 1 1 220px;
+}
+
+.run-bar .actions {
+  margin-left: auto;
+}
+
+.no-delete-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.disclosure > summary {
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 600;
+  list-style: none;
+}
+
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--muted);
+}
+
+.disclosure[open] > summary {
+  margin-bottom: 12px;
+}
+
+.disclosure[open] > summary::before {
+  content: "▾";
+}
+
+.disclosure-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.log-panel.has-error > summary {
+  color: var(--danger);
+}
+
+.check-block {
+  align-items: flex-start;
+}
+
+.check-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.check-name {
+  font-weight: 600;
+}
+
+.check-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.options-actions {
+  margin-top: 2px;
+}
+
+.sheet-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.sheet-tab {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sheet-tab.is-active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.sheet-explain {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
 }
